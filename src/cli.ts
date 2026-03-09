@@ -34,6 +34,7 @@ function usage(): void {
   pty send <name> --seq "text" --seq key:return  Send an ordered sequence
   pty restart <name>                       Restart an exited session
   pty list                                 List active sessions
+  pty list --json                          List sessions as JSON
   pty kill <name>                          Kill or remove a session
 
 Detach from a session with Ctrl+\\ (press twice to send Ctrl+\\ to the process)`);
@@ -185,7 +186,8 @@ async function main(): Promise<void> {
 
     case "list":
     case "ls": {
-      await cmdList();
+      const jsonFlag = args.includes("--json");
+      await cmdList(jsonFlag);
       break;
     }
 
@@ -355,8 +357,25 @@ function cmdPeek(name: string, follow: boolean): void {
   });
 }
 
-async function cmdList(): Promise<void> {
+async function cmdList(json = false): Promise<void> {
   const sessions = await listSessions();
+
+  if (json) {
+    const output = sessions.map((s) => ({
+      name: s.name,
+      status: s.status,
+      pid: s.pid,
+      command: s.metadata
+        ? [s.metadata.displayCommand, ...s.metadata.args].join(" ")
+        : null,
+      cwd: s.metadata?.cwd ?? null,
+      createdAt: s.metadata?.createdAt ?? null,
+      exitCode: s.metadata?.exitCode ?? null,
+      exitedAt: s.metadata?.exitedAt ?? null,
+    }));
+    console.log(JSON.stringify(output));
+    return;
+  }
 
   if (sessions.length === 0) {
     console.log("No active sessions.");
