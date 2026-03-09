@@ -952,6 +952,54 @@ describe("screenshot: alternate screen buffer", () => {
     expect(ss.text).toContain("after-alt-screen");
     expect(ss.text).not.toContain("temporary-alt");
   });
+
+  it("TUI app content is captured while running in alternate screen", async () => {
+    // Simulates what apps like mactop, htop, vim do: enter alternate screen,
+    // enable mouse tracking, enable application cursor keys, draw content
+    const session = await createSession("sh", [
+      "-c",
+      "printf '\\033[?1049h';" + // enter alternate screen
+        "printf '\\033[?1000h';" + // enable mouse click tracking
+        "printf '\\033[?1003h';" + // enable mouse any-event tracking
+        "printf '\\033[?1006h';" + // enable SGR mouse mode
+        "printf '\\033[?1h';" + // enable application cursor keys
+        "printf '\\033[H';" + // home cursor
+        "printf '\\033[32mTUI-DASHBOARD\\033[0m\\n';" + // green title
+        "printf '\\033[33mCPU: 42%%\\033[0m\\n';" + // yellow stats
+        "printf '\\033[31mMEM: 8.2G\\033[0m\\n';" + // red stats
+        "sleep 30",
+    ]);
+
+    const ss = await session.waitForText("TUI-DASHBOARD");
+    expect(ss.text).toContain("TUI-DASHBOARD");
+    expect(ss.text).toContain("CPU: 42%");
+    expect(ss.text).toContain("MEM: 8.2G");
+    // Colors should be preserved
+    expect(ss.ansi).toMatch(/\x1b\[32m/); // green
+    expect(ss.ansi).toMatch(/\x1b\[33m/); // yellow
+    expect(ss.ansi).toMatch(/\x1b\[31m/); // red
+  });
+
+  it("TUI app content survives detach/reattach", async () => {
+    const session = await createSession("sh", [
+      "-c",
+      "printf '\\033[?1049h';" +
+        "printf '\\033[?1000h';" +
+        "printf '\\033[?1003h';" +
+        "printf '\\033[?1h';" +
+        "printf '\\033[H';" +
+        "printf '\\033[1;36mSYSTEM-MONITOR\\033[0m\\n';" +
+        "printf 'Uptime: 42 days\\n';" +
+        "sleep 30",
+    ]);
+
+    await session.waitForText("SYSTEM-MONITOR");
+    await session.reconnect();
+
+    const ss = await session.waitForText("SYSTEM-MONITOR");
+    expect(ss.text).toContain("SYSTEM-MONITOR");
+    expect(ss.text).toContain("Uptime: 42 days");
+  });
 });
 
 // ─── Tests: multiple clients ───

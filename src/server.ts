@@ -167,15 +167,25 @@ export class PtyServer {
             client.rows = size.rows;
             client.cols = size.cols;
             client.attachSeq = ++this.attachCounter;
-            this.negotiateSize();
+            const resized = this.negotiateSize();
 
-            // Send current screen state
-            const screen = this.serialize.serialize();
-            socket.write(encodeScreen(screen));
+            const sendScreen = () => {
+              if (socket.destroyed) return;
+              const screen = this.serialize.serialize();
+              socket.write(encodeScreen(screen));
+              if (this.exited) {
+                socket.write(encodeExit(this.exitCode));
+              }
+            };
 
-            // If already exited, tell them immediately
-            if (this.exited) {
-              socket.write(encodeExit(this.exitCode));
+            if (resized && !this.exited) {
+              // The PTY was resized, which sends SIGWINCH to the process.
+              // Wait briefly so the process can redraw before we serialize,
+              // otherwise the client sees a transient state (e.g., cursor
+              // clamped to the new width instead of where the TUI places it).
+              setTimeout(sendScreen, 50);
+            } else {
+              sendScreen();
             }
             break;
           }
@@ -228,7 +238,9 @@ export class PtyServer {
     });
   }
 
-  private negotiateSize(): void {
+  /** Resize the PTY to match the most recently attached client.
+   *  Returns true if the size actually changed. */
+  private negotiateSize(): boolean {
     // Use the most recently attached/resized non-readonly client's size
     let lastClient: Client | null = null;
     for (const client of this.clients.values()) {
@@ -244,8 +256,10 @@ export class PtyServer {
       if (rows !== this.terminal.rows || cols !== this.terminal.cols) {
         this.ptyProcess.resize(cols, rows);
         this.terminal.resize(cols, rows);
+        return true;
       }
     }
+    return false;
   }
 
   private broadcast(data: Buffer): void {

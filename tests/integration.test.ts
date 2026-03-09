@@ -3,6 +3,7 @@ import * as net from "node:net";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Terminal } from "@xterm/headless";
 import { PtyServer, type ServerOptions } from "../src/server.ts";
 import {
   MessageType,
@@ -419,6 +420,36 @@ describe("integration", () => {
     peeker.destroy();
   });
 
+  it("peek captures TUI app running in alternate screen buffer", async () => {
+    const name = uniqueName();
+    // Simulate a TUI app: enter alt screen, enable mouse tracking, draw content
+    await startServer(name, "sh", [
+      "-c",
+      "printf '\\033[?1049h';" + // enter alternate screen
+        "printf '\\033[?1000h';" + // enable mouse click tracking
+        "printf '\\033[?1003h';" + // enable mouse any-event tracking
+        "printf '\\033[?1h';" + // enable application cursor keys
+        "printf '\\033[H';" + // home cursor
+        "printf '\\033[32mTUI-PEEK-TEST\\033[0m\\n';" +
+        "printf 'Status: running\\n';" +
+        "sleep 30",
+    ]);
+
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Peek should capture the alternate screen content
+    const peeker = await connect(name);
+    const peekReader = new PacketReader();
+    peeker.write(encodePeek());
+
+    const screenPacket = await waitForType(peeker, peekReader, MessageType.SCREEN);
+    const screen = screenPacket.payload.toString();
+    expect(screen).toContain("TUI-PEEK-TEST");
+    expect(screen).toContain("Status: running");
+
+    peeker.destroy();
+  });
+
   it("writes session metadata on creation", async () => {
     const name = uniqueName();
     await startServer(name, "cat", ["-u"]);
@@ -630,4 +661,61 @@ describe("integration", () => {
 
     client.destroy();
   });
+
+  it("SCREEN cursor position matches process intent after resize", async () => {
+    const name = uniqueName();
+
+    // TUI-like process: enters alt screen, positions cursor at col 60.
+    // On SIGWINCH: redraws with cursor at col 10.
+    // Using "sleep & wait" so bash processes the trap immediately when
+    // SIGWINCH interrupts the wait builtin (no sleep cycle delay).
+    await startServer(
+      name,
+      "bash",
+      [
+        "-c",
+        "printf '\\033[?1049h\\033[2J\\033[1;1HTitle\\033[5;60H'; " +
+          "trap 'printf \"\\033[2J\\033[1;1HTitle\\033[5;10H\"' WINCH; " +
+          "sleep 300 & wait; sleep 300",
+      ],
+      { rows: 24, cols: 80 }
+    );
+
+    await new Promise((r) => setTimeout(r, 500));
+
+    // Attach at original size, verify cursor is at (row 5, col 60) = (4, 59) 0-indexed
+    const client1 = await connect(name);
+    const reader1 = new PacketReader();
+    client1.write(encodeAttach(24, 80));
+    const screen1 = await waitForType(client1, reader1, MessageType.SCREEN);
+
+    const t1 = new Terminal({ rows: 24, cols: 80, allowProposedApi: true });
+    await new Promise<void>((r) => t1.write(screen1.payload.toString(), r));
+    expect(t1.buffer.active.cursorY).toBe(4);
+    expect(t1.buffer.active.cursorX).toBe(59);
+    t1.dispose();
+
+    client1.destroy();
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Reconnect at a NARROWER terminal — col 60 doesn't exist in 40 cols.
+    // The server resizes xterm-headless to 40 cols (clamping cursor to col 39),
+    // then serializes BEFORE the process can respond to SIGWINCH.
+    const client2 = await connect(name);
+    const reader2 = new PacketReader();
+    client2.write(encodeAttach(24, 40));
+    const screen2 = await waitForType(client2, reader2, MessageType.SCREEN);
+
+    const t2 = new Terminal({ rows: 24, cols: 40, allowProposedApi: true });
+    await new Promise<void>((r) => t2.write(screen2.payload.toString(), r));
+
+    // The process's SIGWINCH trap will redraw with cursor at (4, 9).
+    // But SCREEN was serialized before the trap could fire, so the cursor
+    // is at the clamped position (4, 39) — not where the process wants it.
+    expect(t2.buffer.active.cursorY).toBe(4);
+    expect(t2.buffer.active.cursorX).toBe(9); // FAILS: actual is 39 (clamped)
+    t2.dispose();
+
+    client2.destroy();
+  }, 15000);
 });

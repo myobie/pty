@@ -27,14 +27,26 @@ function normalizeDetachKey(data: Buffer): Buffer {
 
 // Reset terminal modes that programs may have enabled. This prevents
 // "poisoned" terminals after detach/peek (e.g., mouse tracking, hidden
-// cursor, bracketed paste). Does NOT clear screen content.
-const TERMINAL_SANITIZE =
+// cursor, alternate screen buffer, bracketed paste). Does NOT clear
+// screen content.
+export const TERMINAL_SANITIZE =
+  "\x1b[?1049l" + // leave alternate screen buffer (TUI apps: vim, htop, mactop…)
+  "\x1b[?1l" + // reset cursor keys to normal mode (DECCKM)
+  "\x1b[?7h" + // re-enable autowrap (DECAWM)
+  "\x1b[?6l" + // reset origin mode (DECOM)
   "\x1b[?1000l" + // disable mouse click tracking
   "\x1b[?1002l" + // disable mouse button-event tracking
   "\x1b[?1003l" + // disable mouse any-event tracking
+  "\x1b[?1004l" + // disable focus event reporting
   "\x1b[?1006l" + // disable SGR mouse mode
   "\x1b[?25h" + // show cursor
   "\x1b[?2004l" + // disable bracketed paste
+  "\x1b[4l" + // reset insert mode (IRM) to replace
+  "\x1b[r" + // reset scroll region (DECSTBM) to full terminal
+  "\x1b[0m" + // reset SGR attributes (colors, bold, etc.)
+  "\x1b[0 q" + // reset cursor style to terminal default
+  "\x1b>" + // reset application keypad mode (DECKPNM)
+  "\x1b(B" + // reset G0 character set to ASCII
   "\x1b[<u"; // pop Kitty keyboard protocol mode
 
 export interface PeekOptions {
