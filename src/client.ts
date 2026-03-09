@@ -73,6 +73,7 @@ export function peek(options: PeekOptions): void {
         }
         // All other input is silently ignored (read-only)
       });
+      stdin.resume();
     }
   });
 
@@ -215,6 +216,13 @@ export function attach(options: AttachOptions): void {
         socket.write(encodeData(Buffer.from(forward).toString()));
       }
     });
+
+    // Explicitly resume stdin. We cannot rely on the auto-resume from
+    // .on("data") because Node.js skips it when _readableState.flowing
+    // is exactly `false` (as opposed to the initial `null`). This state
+    // can be left behind by readline (restart prompt) or other code that
+    // previously consumed stdin.
+    stdin.resume();
 
     // Handle terminal resize
     if (stdout instanceof tty.WriteStream) {

@@ -20,7 +20,7 @@ import { getSocketPath, cleanupAll } from "../src/sessions.ts";
 // All tests run in a tmp directory to avoid polluting the project
 const testCwd = fs.mkdtempSync(path.join(os.tmpdir(), "pty-ss-"));
 afterAll(() => {
-  fs.rmSync(testCwd, { recursive: true, force: true });
+  fs.rmSync(testCwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 });
 
 // ─── Types ───
@@ -291,7 +291,7 @@ afterEach(async () => {
   }
   sessionNames = [];
   for (const dir of tmpDirs) {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
   tmpDirs = [];
 });

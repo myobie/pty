@@ -281,7 +281,7 @@ async function handleDeadSession(
 
   // Restart
   cleanupAll(session.name);
-  await spawnDaemon(session.name, meta.command, meta.args, meta.displayCommand);
+  await spawnDaemon(session.name, meta.command, meta.args, meta.displayCommand, meta.cwd);
   console.log(`Session "${session.name}" restarted.`);
   doAttach(session.name);
 }
@@ -394,7 +394,7 @@ async function cmdRestart(name: string): Promise<void> {
   }
 
   cleanupAll(name);
-  await spawnDaemon(name, meta.command, meta.args, meta.displayCommand);
+  await spawnDaemon(name, meta.command, meta.args, meta.displayCommand, meta.cwd);
   console.log(`Session "${name}" restarted.`);
   doAttach(name);
 }
@@ -403,7 +403,8 @@ async function spawnDaemon(
   name: string,
   command: string,
   args: string[],
-  displayCommand: string
+  displayCommand: string,
+  cwd?: string
 ): Promise<void> {
   const stdout = process.stdout as tty.WriteStream;
   const rows = stdout.rows ?? 24;
@@ -416,7 +417,7 @@ async function spawnDaemon(
     command,
     args,
     displayCommand,
-    cwd: process.cwd(),
+    cwd: cwd ?? process.cwd(),
     rows,
     cols,
   });
