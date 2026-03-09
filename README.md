@@ -24,6 +24,11 @@ pty attach myserver                   # reconnect
 pty peek myserver                     # print current screen and exit
 pty peek -f myserver                  # follow output read-only
 
+pty send myserver "hello"             # send text (no implicit newline)
+pty send myserver $'hello\n'          # send text with newline (shell syntax)
+pty send myserver --seq "git status" --seq key:return  # ordered sequence
+pty send myserver --seq key:ctrl+c    # send control keys
+
 pty restart myserver                  # restart an exited session
 pty kill myserver                     # terminate a session
 ```

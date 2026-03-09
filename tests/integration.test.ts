@@ -718,4 +718,216 @@ describe("integration", () => {
 
     client2.destroy();
   }, 15000);
+
+  // ─── Terminal mode preservation across attach ───
+  //
+  // Terminal input modes (keyboard protocol, mouse tracking, bracketed paste,
+  // etc.) are set by the process writing escape sequences to the PTY. These
+  // are consumed by xterm-headless (they're not visual content) and never
+  // appear in SerializeAddon output. This means:
+  //
+  //   1. Late attach: mode was broadcast when zero clients were connected → lost
+  //   2. Detach/reattach: TERMINAL_SANITIZE resets the mode, SCREEN doesn't
+  //      restore it, and the process doesn't re-send it → lost
+  //
+  // Each test starts a process that enables a mode, waits for it to
+  // initialize, then verifies the mode sequence reaches a late-attaching
+  // client.
+
+  // Only modes NOT already preserved by xterm-headless SerializeAddon.
+  // Modes like bracketed paste, mouse click/button-event/any-event tracking,
+  // focus reporting, application cursor keys, and alternate screen buffer
+  // are already serialized by xterm-headless — they pass without any extra work.
+  const terminalModes = [
+    {
+      name: "Kitty keyboard protocol",
+      enable: "\x1b[>1u",
+      printf: "\\033[>1u",
+      why: "Shift+Enter, key disambiguation",
+    },
+    {
+      name: "SGR mouse mode",
+      enable: "\x1b[?1006h",
+      printf: "\\033[?1006h",
+      why: "extended mouse coordinates (>223 cols)",
+    },
+    {
+      name: "cursor hidden",
+      enable: "\x1b[?25l",
+      printf: "\\033[?25l",
+      why: "TUI apps hide cursor during rendering",
+    },
+  ];
+
+  for (const mode of terminalModes) {
+    it(`${mode.name} mode reaches client on late attach (${mode.why})`, async () => {
+      const name = uniqueName();
+      await startServer(name, "sh", [
+        "-c",
+        `printf '${mode.printf}'; echo 'ready'; cat`,
+      ]);
+
+      // Process has initialized — mode was broadcast to zero clients.
+      await new Promise((r) => setTimeout(r, 300));
+
+      const client = await connect(name);
+      const reader = new PacketReader();
+      const payloads: string[] = [];
+
+      client.on("data", (data: Buffer) => {
+        for (const p of reader.feed(data)) {
+          if (p.type === MessageType.SCREEN || p.type === MessageType.DATA) {
+            payloads.push(p.payload.toString());
+          }
+        }
+      });
+
+      client.write(encodeAttach(24, 80));
+      await new Promise((r) => setTimeout(r, 500));
+
+      expect(payloads.join("")).toContain(mode.enable);
+      client.destroy();
+    });
+  }
+
+  // ─── send (no ATTACH) ───
+
+  describe("send", () => {
+    it("sends text to a running session", async () => {
+      const name = uniqueName();
+      await startServer(name, "cat");
+
+      // Attach a watcher to observe output
+      const watcher = await connect(name);
+      const watchReader = new PacketReader();
+      watcher.write(encodeAttach(24, 80));
+      await waitForType(watcher, watchReader, MessageType.SCREEN);
+
+      // Send data without ATTACH — just raw DATA packets
+      const sender = await connect(name);
+      sender.write(encodeData("hello from send"));
+      sender.end();
+
+      // Watcher should see the echoed output
+      const data = await waitForType(watcher, watchReader, MessageType.DATA, 3000);
+      expect(data.payload.toString()).toContain("hello from send");
+
+      watcher.destroy();
+    });
+
+    it("sends multiple DATA packets in sequence", async () => {
+      const name = uniqueName();
+      await startServer(name, "cat");
+
+      const watcher = await connect(name);
+      const watchReader = new PacketReader();
+      watcher.write(encodeAttach(24, 80));
+      await waitForType(watcher, watchReader, MessageType.SCREEN);
+
+      // Start accumulating DATA before sending
+      let output = "";
+      const watchReader2 = new PacketReader();
+      watcher.on("data", (data: Buffer) => {
+        for (const p of watchReader2.feed(data)) {
+          if (p.type === MessageType.DATA) {
+            output += p.payload.toString();
+          }
+        }
+      });
+
+      const sender = await connect(name);
+      sender.write(encodeData("one"));
+      sender.write(encodeData("two"));
+      sender.write(encodeData("three\n"));
+      sender.end();
+
+      // Wait for cat to echo all data
+      await new Promise((r) => setTimeout(r, 500));
+      expect(output).toContain("one");
+      expect(output).toContain("two");
+      expect(output).toContain("three");
+
+      watcher.destroy();
+    });
+
+    it("does not trigger screen replay", async () => {
+      const name = uniqueName();
+      await startServer(name, "sh", ["-c", "echo 'initial output'; cat"]);
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Send data without ATTACH
+      const sender = await connect(name);
+      const senderReader = new PacketReader();
+      const senderPackets: Packet[] = [];
+
+      sender.on("data", (data: Buffer) => {
+        senderPackets.push(...senderReader.feed(data));
+      });
+
+      sender.write(encodeData("sent text"));
+      await new Promise((r) => setTimeout(r, 300));
+      sender.end();
+      await new Promise((r) => sender.on("close", r));
+
+      // Sender should not have received any SCREEN packet
+      const screenPackets = senderPackets.filter((p) => p.type === MessageType.SCREEN);
+      expect(screenPackets.length).toBe(0);
+    });
+
+    it("connection to non-existent session produces error", async () => {
+      const name = uniqueName();
+
+      // Try to connect — should fail with ENOENT
+      const socket = net.createConnection(getSocketPath(name));
+      const error = await new Promise<NodeJS.ErrnoException>((resolve) => {
+        socket.on("error", resolve);
+      });
+      expect(error.code).toMatch(/ENOENT|ECONNREFUSED/);
+    });
+  });
+
+  // Detach/reattach: the mode was active, TERMINAL_SANITIZE popped it on
+  // detach, and the SCREEN replay on reattach doesn't restore it. The
+  // process only sent the mode push once at startup (like Claude Code does
+  // with Kitty keyboard protocol) and won't re-send it.
+
+  for (const mode of terminalModes) {
+    it(`${mode.name} mode survives detach/reattach`, async () => {
+      const name = uniqueName();
+      await startServer(name, "sh", [
+        "-c",
+        `printf '${mode.printf}'; echo 'ready'; cat`,
+      ]);
+
+      // First client attaches immediately — gets mode via DATA
+      const client1 = await connect(name);
+      const reader1 = new PacketReader();
+      client1.on("data", (data: Buffer) => reader1.feed(data));
+      client1.write(encodeAttach(24, 80));
+      await new Promise((r) => setTimeout(r, 300));
+
+      // Detach (TERMINAL_SANITIZE resets the mode on the user's terminal)
+      client1.write(encodeDetach());
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Reattach — the mode must be present in SCREEN or DATA
+      const client2 = await connect(name);
+      const reader2 = new PacketReader();
+      const payloads: string[] = [];
+
+      client2.on("data", (data: Buffer) => {
+        for (const p of reader2.feed(data)) {
+          if (p.type === MessageType.SCREEN || p.type === MessageType.DATA) {
+            payloads.push(p.payload.toString());
+          }
+        }
+      });
+
+      client2.write(encodeAttach(24, 80));
+      await new Promise((r) => setTimeout(r, 500));
+
+      expect(payloads.join("")).toContain(mode.enable);
+      client2.destroy();
+    });
+  }
 });

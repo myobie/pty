@@ -58,6 +58,9 @@ export class PtyServer {
   private name: string;
   private options: ServerOptions;
   private attachCounter = 0;
+  private sgrMouseMode = false;
+  private cursorHidden = false;
+  private kittyKeyboardStack: number[] = [];
   readonly ready: Promise<void>;
 
   constructor(options: ServerOptions) {
@@ -73,6 +76,45 @@ export class PtyServer {
     });
     this.serialize = new xtermSerialize.SerializeAddon();
     this.terminal.loadAddon(this.serialize);
+
+    // Track terminal modes not exposed by xterm's serialize addon
+    this.terminal.parser.registerCsiHandler(
+      { prefix: "?", final: "h" },
+      (params) => {
+        for (const p of params) {
+          const v = typeof p === "number" ? p : p[0];
+          if (v === 1006) this.sgrMouseMode = true;
+          if (v === 25) this.cursorHidden = false;
+        }
+        return false;
+      }
+    );
+    this.terminal.parser.registerCsiHandler(
+      { prefix: "?", final: "l" },
+      (params) => {
+        for (const p of params) {
+          const v = typeof p === "number" ? p : p[0];
+          if (v === 1006) this.sgrMouseMode = false;
+          if (v === 25) this.cursorHidden = true;
+        }
+        return false;
+      }
+    );
+    this.terminal.parser.registerCsiHandler(
+      { prefix: ">", final: "u" },
+      (params) => {
+        const flags = typeof params[0] === "number" ? params[0] : params[0][0];
+        this.kittyKeyboardStack.push(flags);
+        return false;
+      }
+    );
+    this.terminal.parser.registerCsiHandler(
+      { prefix: "<", final: "u" },
+      () => {
+        this.kittyKeyboardStack.pop();
+        return false;
+      }
+    );
 
     // Spawn the child process in a PTY via a shell, so that shell scripts,
     // symlinks, and shebangs all work reliably (like tmux/screen do).
@@ -171,7 +213,7 @@ export class PtyServer {
 
             const sendScreen = () => {
               if (socket.destroyed) return;
-              const screen = this.serialize.serialize();
+              const screen = this.getModePrefix() + this.serialize.serialize();
               socket.write(encodeScreen(screen));
               if (this.exited) {
                 socket.write(encodeExit(this.exitCode));
@@ -194,7 +236,7 @@ export class PtyServer {
             client.readonly = true;
 
             // Send current screen state (same as ATTACH)
-            const peekScreen = this.serialize.serialize();
+            const peekScreen = this.getModePrefix() + this.serialize.serialize();
             socket.write(encodeScreen(peekScreen));
 
             if (this.exited) {
@@ -236,6 +278,16 @@ export class PtyServer {
     socket.on("error", () => {
       this.clients.delete(socket);
     });
+  }
+
+  private getModePrefix(): string {
+    let prefix = "";
+    if (this.sgrMouseMode) prefix += "\x1b[?1006h";
+    if (this.cursorHidden) prefix += "\x1b[?25l";
+    for (const flags of this.kittyKeyboardStack) {
+      prefix += `\x1b[>${flags}u`;
+    }
+    return prefix;
   }
 
   /** Resize the PTY to match the most recently attached client.

@@ -18,6 +18,7 @@ _pty() {
     'run:Create a session and attach'
     'attach:Attach to an existing session'
     'peek:Print current screen or follow output'
+    'send:Send text or keys to a session'
     'kill:Kill or remove a session'
     'list:List active sessions'
     'restart:Restart an exited session'
@@ -43,6 +44,11 @@ _pty() {
           _arguments \
             '(-f --follow)'{-f,--follow}'[Follow output read-only]' \
             '1:session:_pty_sessions'
+          ;;
+        send)
+          _arguments \
+            '1:session:_pty_sessions' \
+            '*--seq[Send a sequence item]:value:'
           ;;
         kill|restart)
           _arguments '1:session:_pty_sessions'

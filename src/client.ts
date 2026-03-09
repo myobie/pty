@@ -138,6 +138,37 @@ export function peek(options: PeekOptions): void {
   });
 }
 
+export interface SendOptions {
+  name: string;
+  data: string[];
+}
+
+/** Send data to a session without attaching. Silent on success. */
+export function send(options: SendOptions): void {
+  const socketPath = getSocketPath(options.name);
+  const socket = net.createConnection(socketPath);
+
+  socket.on("connect", () => {
+    for (const item of options.data) {
+      socket.write(encodeData(item));
+    }
+    socket.end();
+  });
+
+  socket.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "ENOENT" || err.code === "ECONNREFUSED") {
+      console.error(`Session "${options.name}" not found or not running.`);
+    } else {
+      console.error(`Connection error: ${err.message}`);
+    }
+    process.exit(1);
+  });
+
+  socket.on("close", () => {
+    process.exit(0);
+  });
+}
+
 export interface AttachOptions {
   name: string;
   onExit?: (code: number) => void;

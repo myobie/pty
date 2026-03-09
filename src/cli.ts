@@ -5,7 +5,8 @@ import * as path from "node:path";
 import * as readline from "node:readline/promises";
 import * as tty from "node:tty";
 import { fileURLToPath } from "node:url";
-import { attach, peek } from "./client.ts";
+import { attach, peek, send } from "./client.ts";
+import { parseSeqValue } from "./keys.ts";
 import {
   listSessions,
   getSession,
@@ -29,6 +30,8 @@ function usage(): void {
   pty attach -r <name>                     Attach, auto-restart if exited
   pty peek <name>                          Print current screen and exit
   pty peek -f <name>                       Follow output read-only (Ctrl+\\ to stop)
+  pty send <name> "text"                   Send text to a session
+  pty send <name> --seq "text" --seq key:return  Send an ordered sequence
   pty restart <name>                       Restart an exited session
   pty list                                 List active sessions
   pty kill <name>                          Kill or remove a session
@@ -128,6 +131,55 @@ async function main(): Promise<void> {
         process.exit(1);
       }
       cmdPeek(peekName, follow);
+      break;
+    }
+
+    case "send": {
+      const sendName = args[1];
+      if (!sendName) {
+        console.error('Usage: pty send <name> "text"  or  pty send <name> --seq "text" --seq key:return');
+        process.exit(1);
+      }
+      try {
+        validateName(sendName);
+      } catch (e: any) {
+        console.error(e.message);
+        process.exit(1);
+      }
+
+      const sendArgs = args.slice(2);
+      const hasSeq = sendArgs.includes("--seq");
+      const hasPositional = sendArgs.length > 0 && !sendArgs[0].startsWith("--");
+
+      if (hasSeq && hasPositional) {
+        console.error("Cannot mix positional text with --seq flags.");
+        process.exit(1);
+      }
+
+      let data: string[];
+      if (hasSeq) {
+        data = [];
+        for (let j = 0; j < sendArgs.length; j++) {
+          if (sendArgs[j] === "--seq") {
+            j++;
+            if (j >= sendArgs.length) {
+              console.error("--seq requires a value.");
+              process.exit(1);
+            }
+            data.push(parseSeqValue(sendArgs[j]));
+          } else {
+            console.error(`Unexpected argument: ${sendArgs[j]}`);
+            process.exit(1);
+          }
+        }
+      } else if (hasPositional) {
+        data = [sendArgs[0]];
+      } else {
+        console.error("Nothing to send.");
+        process.exit(1);
+      }
+
+      send({ name: sendName, data });
       break;
     }
 
