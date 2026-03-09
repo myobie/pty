@@ -1,0 +1,554 @@
+import { spawn, execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import * as readline from "node:readline/promises";
+import * as tty from "node:tty";
+import { fileURLToPath } from "node:url";
+import { attach, peek } from "./client.ts";
+import {
+  listSessions,
+  getSession,
+  getSocketPath,
+  cleanupAll,
+  cleanupSocket,
+  validateName,
+  acquireLock,
+  releaseLock,
+  type SessionInfo,
+} from "./sessions.ts";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+function usage(): void {
+  console.log(`Usage:
+  pty run <name> <command> [args...]        Create a session and attach
+  pty run -d <name> <command> [args...]    Create a session in the background
+  pty run -a <name> <command> [args...]    Create or attach if already running
+  pty attach <name>                        Attach to an existing session
+  pty attach -r <name>                     Attach, auto-restart if exited
+  pty peek <name>                          Print current screen and exit
+  pty peek -f <name>                       Follow output read-only (Ctrl+\\ to stop)
+  pty restart <name>                       Restart an exited session
+  pty list                                 List active sessions
+  pty kill <name>                          Kill or remove a session
+
+Detach from a session with Ctrl+\\ (press twice to send Ctrl+\\ to the process)`);
+}
+
+async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+
+  if (args.length === 0) {
+    await cmdList();
+    return;
+  }
+
+  const command = args[0];
+
+  switch (command) {
+    case "run": {
+      // Parse flags before positional args
+      let detach = false;
+      let attachExisting = false;
+      let i = 1;
+      while (i < args.length && args[i].startsWith("-") && args[i] !== "--") {
+        if (args[i] === "-d" || args[i] === "--detach") detach = true;
+        else if (args[i] === "-a" || args[i] === "--attach") attachExisting = true;
+        else break;
+        i++;
+      }
+      const runArgs = args.slice(i);
+
+      const dashDash = runArgs.indexOf("--");
+      let name: string;
+      let cmd: string;
+      let cmdArgs: string[];
+
+      if (dashDash !== -1) {
+        if (dashDash !== 1) {
+          console.error("Usage: pty run [-d] [-a] <name> -- <command> [args...]");
+          process.exit(1);
+        }
+        name = runArgs[0];
+        cmd = runArgs[dashDash + 1];
+        cmdArgs = runArgs.slice(dashDash + 2);
+      } else {
+        name = runArgs[0];
+        cmd = runArgs[1];
+        cmdArgs = runArgs.slice(2);
+      }
+
+      if (!name || !cmd) {
+        console.error("Usage: pty run [-d] [-a] <name> -- <command> [args...]");
+        process.exit(1);
+      }
+      try {
+        validateName(name);
+      } catch (e: any) {
+        console.error(e.message);
+        process.exit(1);
+      }
+      const displayCmd = cmd;
+      cmd = resolveCommand(cmd);
+      await cmdRun(name, cmd, cmdArgs, detach, attachExisting, displayCmd);
+      break;
+    }
+
+    case "attach":
+    case "a": {
+      const autoRestart =
+        args[1] === "--auto-restart" || args[1] === "-r";
+      const attachName = autoRestart ? args[2] : args[1];
+      if (!attachName) {
+        console.error("Usage: pty attach [-r|--auto-restart] <name>");
+        process.exit(1);
+      }
+      try {
+        validateName(attachName);
+      } catch (e: any) {
+        console.error(e.message);
+        process.exit(1);
+      }
+      await cmdAttach(attachName, autoRestart);
+      break;
+    }
+
+    case "peek": {
+      const follow = args[1] === "-f" || args[1] === "--follow";
+      const peekName = follow ? args[2] : args[1];
+      if (!peekName) {
+        console.error("Usage: pty peek [-f] <name>");
+        process.exit(1);
+      }
+      try {
+        validateName(peekName);
+      } catch (e: any) {
+        console.error(e.message);
+        process.exit(1);
+      }
+      cmdPeek(peekName, follow);
+      break;
+    }
+
+    case "list":
+    case "ls": {
+      await cmdList();
+      break;
+    }
+
+    case "restart": {
+      if (args.length < 2) {
+        console.error("Usage: pty restart <name>");
+        process.exit(1);
+      }
+      await cmdRestart(args[1]);
+      break;
+    }
+
+    case "kill": {
+      if (args.length < 2) {
+        console.error("Usage: pty kill <name>");
+        process.exit(1);
+      }
+      try {
+        validateName(args[1]);
+      } catch (e: any) {
+        console.error(e.message);
+        process.exit(1);
+      }
+      await cmdKill(args[1]);
+      break;
+    }
+
+    case "help":
+    case "--help":
+    case "-h": {
+      usage();
+      break;
+    }
+
+    default: {
+      console.error(`Unknown command: ${command}`);
+      usage();
+      process.exit(1);
+    }
+  }
+}
+
+async function cmdRun(
+  name: string,
+  command: string,
+  args: string[],
+  detach = false,
+  attachExisting = false,
+  displayCommand: string
+): Promise<void> {
+  const session = await getSession(name);
+  if (session?.status === "running") {
+    if (attachExisting) {
+      console.log(`Session "${name}" already running, attaching.`);
+      doAttach(name);
+      return;
+    }
+    console.error(
+      `Session "${name}" is already running. Use "pty attach ${name}" to connect.`
+    );
+    process.exit(1);
+  }
+
+  if (!acquireLock(name)) {
+    console.error(
+      `Session "${name}" is being created by another process. Try again.`
+    );
+    process.exit(1);
+  }
+
+  // Clean up any dead session with the same name
+  if (session?.status === "exited") {
+    cleanupAll(name);
+  }
+
+  try {
+    await spawnDaemon(name, command, args, displayCommand);
+  } finally {
+    releaseLock(name);
+  }
+
+  console.log(`Session "${name}" created.`);
+
+  if (detach) {
+    return;
+  }
+
+  doAttach(name);
+}
+
+async function cmdAttach(
+  name: string,
+  autoRestart = false
+): Promise<void> {
+  const session = await getSession(name);
+
+  if (!session) {
+    console.error(`Session "${name}" not found.`);
+    process.exit(1);
+  }
+
+  if (session.status === "running") {
+    doAttach(name);
+    return;
+  }
+
+  // Dead session — show last lines and offer to restart
+  await handleDeadSession(session, autoRestart);
+}
+
+async function handleDeadSession(
+  session: SessionInfo,
+  autoRestart = false
+): Promise<void> {
+  const meta = session.metadata;
+  if (!meta) {
+    console.error(`Session "${session.name}" exited (no metadata available).`);
+    cleanupAll(session.name);
+    process.exit(1);
+  }
+
+  // Show last lines
+  if (meta.lastLines && meta.lastLines.length > 0) {
+    console.log("");
+    for (const line of meta.lastLines) {
+      console.log(`  ${line}`);
+    }
+    console.log("");
+  }
+
+  console.log(
+    `Session "${session.name}" exited with code ${meta.exitCode ?? "unknown"}.`
+  );
+
+  const cmd = [meta.displayCommand, ...meta.args].join(" ");
+  console.log(`Command was: ${cmd}`);
+  console.log("");
+
+  if (!autoRestart) {
+    const answer = await ask("Restart? [Y/n] ");
+    if (answer.toLowerCase() === "n") {
+      process.exit(0);
+    }
+  }
+
+  // Restart
+  cleanupAll(session.name);
+  await spawnDaemon(session.name, meta.command, meta.args, meta.displayCommand);
+  console.log(`Session "${session.name}" restarted.`);
+  doAttach(session.name);
+}
+
+function doAttach(name: string): void {
+  attach({
+    name,
+    onDetach: () => process.exit(0),
+    onExit: (code) => process.exit(code),
+  });
+}
+
+function cmdPeek(name: string, follow: boolean): void {
+  peek({
+    name,
+    follow,
+    onDetach: () => process.exit(0),
+    onExit: (code) => process.exit(code),
+  });
+}
+
+async function cmdList(): Promise<void> {
+  const sessions = await listSessions();
+
+  if (sessions.length === 0) {
+    console.log("No active sessions.");
+    return;
+  }
+
+  const running = sessions.filter((s) => s.status === "running");
+  const exited = sessions.filter((s) => s.status === "exited");
+
+  if (running.length > 0) {
+    console.log("Active sessions:");
+    for (const session of running) {
+      const cmd = session.metadata
+        ? [session.metadata.displayCommand, ...session.metadata.args].join(" ")
+        : "unknown";
+      const cwd = session.metadata?.cwd
+        ? shortPath(session.metadata.cwd)
+        : "";
+      console.log(`  ${session.name} (pid: ${session.pid}) — ${cwd} — ${cmd}`);
+    }
+  }
+
+  if (exited.length > 0) {
+    if (running.length > 0) console.log("");
+    console.log("Exited sessions:");
+    for (const session of exited) {
+      const meta = session.metadata;
+      const code = meta?.exitCode ?? "?";
+      const ago = meta?.exitedAt ? timeAgo(new Date(meta.exitedAt)) : "unknown";
+      const cwd = meta?.cwd ? shortPath(meta.cwd) : "";
+      console.log(`  ${session.name} (exited with code ${code}, ${ago}) — ${cwd}`);
+    }
+  }
+}
+
+async function cmdKill(name: string): Promise<void> {
+  const session = await getSession(name);
+
+  if (!session) {
+    console.error(`Session "${name}" not found.`);
+    process.exit(1);
+  }
+
+  if (session.status === "running" && session.pid) {
+    try {
+      process.kill(session.pid, "SIGTERM");
+      console.log(`Session "${name}" killed.`);
+    } catch {
+      console.error(`Failed to kill session "${name}".`);
+    }
+    cleanupSocket(name);
+  }
+
+  cleanupAll(name);
+  if (session.status === "exited") {
+    console.log(`Session "${name}" removed.`);
+  }
+}
+
+async function cmdRestart(name: string): Promise<void> {
+  try {
+    validateName(name);
+  } catch (e: any) {
+    console.error(e.message);
+    process.exit(1);
+  }
+
+  const session = await getSession(name);
+
+  if (!session) {
+    console.error(`Session "${name}" not found.`);
+    process.exit(1);
+  }
+
+  if (session.status === "running") {
+    console.error(
+      `Session "${name}" is still running. Kill it first with "pty kill ${name}".`
+    );
+    process.exit(1);
+  }
+
+  const meta = session.metadata;
+  if (!meta) {
+    console.error(`Session "${name}" has no metadata — cannot restart.`);
+    cleanupAll(name);
+    process.exit(1);
+  }
+
+  cleanupAll(name);
+  await spawnDaemon(name, meta.command, meta.args, meta.displayCommand);
+  console.log(`Session "${name}" restarted.`);
+  doAttach(name);
+}
+
+async function spawnDaemon(
+  name: string,
+  command: string,
+  args: string[],
+  displayCommand: string
+): Promise<void> {
+  const stdout = process.stdout as tty.WriteStream;
+  const rows = stdout.rows ?? 24;
+  const cols = stdout.columns ?? 80;
+
+  const tsxBin = path.join(__dirname, "..", "node_modules", ".bin", "tsx");
+  const serverModule = path.join(__dirname, "server.ts");
+  const config = JSON.stringify({
+    name,
+    command,
+    args,
+    displayCommand,
+    cwd: process.cwd(),
+    rows,
+    cols,
+  });
+
+  const child = spawn(tsxBin, [serverModule], {
+    detached: true,
+    stdio: ["ignore", "ignore", "pipe"],
+    env: { ...process.env, PTY_SERVER_CONFIG: config },
+  });
+
+  // Capture stderr for better error reporting
+  let stderrOutput = "";
+  child.stderr?.on("data", (data: Buffer) => {
+    stderrOutput += data.toString();
+  });
+
+  // Detect early daemon crash before the socket appears
+  let earlyExit = false;
+  let earlyExitCode: number | null = null;
+  child.on("exit", (code) => {
+    earlyExit = true;
+    earlyExitCode = code;
+  });
+
+  (child.stderr as any)?.unref?.();
+  child.unref();
+
+  await waitForSocket(name, 3000, () => {
+    if (earlyExit) {
+      const details = stderrOutput.trim();
+      const msg = `Daemon process exited immediately (code ${earlyExitCode ?? "unknown"}).`;
+      throw new Error(details ? `${msg}\n${details}` : `${msg} Is the command valid?`);
+    }
+  });
+}
+
+function waitForSocket(
+  name: string,
+  timeoutMs: number,
+  earlyCheck?: () => void
+): Promise<void> {
+  const socketPath = getSocketPath(name);
+  const start = Date.now();
+
+  return new Promise((resolve, reject) => {
+    function check(): void {
+      // Check for early daemon failure
+      try {
+        earlyCheck?.();
+      } catch (e) {
+        reject(e);
+        return;
+      }
+
+      if (Date.now() - start > timeoutMs) {
+        reject(new Error(`Timeout waiting for session "${name}" to start`));
+        return;
+      }
+
+      try {
+        const stat = fs.statSync(socketPath);
+        if (stat) {
+          setTimeout(resolve, 100);
+          return;
+        }
+      } catch {}
+
+      setTimeout(check, 50);
+    }
+    check();
+  });
+}
+
+function ask(prompt: string): Promise<string> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  return rl.question(prompt).then((answer) => {
+    rl.close();
+    return answer;
+  });
+}
+
+function resolveCommand(cmd: string): string {
+  // Already absolute — just verify it exists
+  if (path.isAbsolute(cmd)) {
+    if (!fs.existsSync(cmd)) {
+      console.error(`Command not found: ${cmd}`);
+      process.exit(1);
+    }
+    return cmd;
+  }
+
+  // Relative path (contains /) — resolve against cwd
+  if (cmd.includes("/")) {
+    const resolved = path.resolve(cmd);
+    if (!fs.existsSync(resolved)) {
+      console.error(`Command not found: ${cmd}`);
+      process.exit(1);
+    }
+    return resolved;
+  }
+
+  // Bare command name — look up in PATH
+  try {
+    return execFileSync("which", [cmd], { encoding: "utf8" }).trim();
+  } catch {
+    console.error(`Command not found: ${cmd}`);
+    process.exit(1);
+  }
+}
+
+function shortPath(p: string): string {
+  const home = os.homedir();
+  if (p === home) return "~";
+  if (p.startsWith(home + "/")) return "~" + p.slice(home.length);
+  return p;
+}
+
+function timeAgo(date: Date): string {
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+main().catch((err) => {
+  console.error(err.message);
+  process.exit(1);
+});
