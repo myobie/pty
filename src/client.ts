@@ -101,7 +101,10 @@ export function peek(options: PeekOptions): void {
         case MessageType.SCREEN:
           stdout.write(packet.payload);
           if (!follow) {
-            stdout.write(TERMINAL_SANITIZE + CURSOR_TO_BOTTOM + "\n");
+            if (!options.plain) {
+              stdout.write(TERMINAL_SANITIZE + CURSOR_TO_BOTTOM);
+            }
+            stdout.write("\n");
             socket.destroy();
             return;
           }
