@@ -979,6 +979,77 @@ describe("integration", () => {
     peeker.destroy();
   });
 
+  // ─── restart ───
+
+  describe("restart", () => {
+    it("restart preserves command and cwd after killing a running session", async () => {
+      const name = uniqueName();
+      await startServer(name, "sh", ["-c", "echo 'original'; sleep 60"]);
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Verify it's running and has metadata
+      const meta1 = readMetadata(name);
+      expect(meta1).not.toBeNull();
+      expect(meta1!.command).toBe("sh");
+      expect(meta1!.cwd).toBe(testCwd);
+
+      // Verify we can connect
+      const client = await connect(name);
+      const reader = new PacketReader();
+      client.write(encodeAttach(24, 80));
+      const screen = await waitForType(client, reader, MessageType.SCREEN);
+      expect(screen.payload.toString()).toContain("original");
+      client.destroy();
+
+      // Kill the server (simulating what cmdRestart does)
+      await servers[servers.length - 1].close();
+      servers.pop();
+
+      // Metadata should still exist (server.close() only cleans socket/pid)
+      const meta2 = readMetadata(name);
+      expect(meta2).not.toBeNull();
+      expect(meta2!.command).toBe("sh");
+      expect(meta2!.cwd).toBe(testCwd);
+
+      // Restart with the same metadata
+      await startServer(name, meta2!.command, meta2!.args, { cwd: meta2!.cwd });
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Verify the restarted session works
+      const client2 = await connect(name);
+      const reader2 = new PacketReader();
+      client2.write(encodeAttach(24, 80));
+      const screen2 = await waitForType(client2, reader2, MessageType.SCREEN);
+      expect(screen2.payload.toString()).toContain("original");
+      client2.destroy();
+    });
+
+    it("metadata persists through kill for restart", async () => {
+      const name = uniqueName();
+      const server = await startServer(name, "cat", ["-u"], { cwd: testCwd });
+
+      // Verify initial metadata
+      const meta = readMetadata(name);
+      expect(meta).not.toBeNull();
+      expect(meta!.command).toBe("cat");
+      expect(meta!.args).toEqual(["-u"]);
+      expect(meta!.cwd).toBe(testCwd);
+
+      // Simulate what cmdRestart does for a running session:
+      // 1. Read metadata (already done above)
+      // 2. Kill process
+      await server.close();
+      servers = servers.filter((s) => s !== server);
+
+      // 3. Metadata should still be on disk (close() only removes socket/pid)
+      const metaAfterKill = readMetadata(name);
+      expect(metaAfterKill).not.toBeNull();
+      expect(metaAfterKill!.command).toBe("cat");
+      expect(metaAfterKill!.args).toEqual(["-u"]);
+      expect(metaAfterKill!.cwd).toBe(testCwd);
+    });
+  });
+
   // Detach/reattach: the mode was active, TERMINAL_SANITIZE popped it on
   // detach, and the SCREEN replay on reattach doesn't restore it. The
   // process only sent the mode push once at startup (like Claude Code does

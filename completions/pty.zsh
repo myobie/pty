@@ -52,8 +52,13 @@ _pty() {
             '--with-delay[Delay between --seq items (seconds)]:seconds:' \
             '*--seq[Send a sequence item]:value:'
           ;;
-        kill|restart)
+        kill)
           _arguments '1:session:_pty_sessions'
+          ;;
+        restart)
+          _arguments \
+            '(-y --yes)'{-y,--yes}'[Skip confirmation for running sessions]' \
+            '1:session:_pty_sessions'
           ;;
         run)
           # After --, fall back to normal (command + file) completion

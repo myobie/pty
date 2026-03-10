@@ -34,7 +34,8 @@ function usage(): void {
   pty send <name> "text"                   Send text to a session
   pty send <name> --seq "text" --seq key:return  Send an ordered sequence
   pty send <name> --with-delay 0.5 --seq ...     Delay between each --seq item
-  pty restart <name>                       Restart an exited session
+  pty restart <name>                       Restart a session (prompts if running)
+  pty restart -y <name>                    Restart without confirmation
   pty list                                 List active sessions
   pty list --json                          List sessions as JSON
   pty kill <name>                          Kill or remove a session
@@ -214,11 +215,13 @@ async function main(): Promise<void> {
     }
 
     case "restart": {
-      if (args.length < 2) {
-        console.error("Usage: pty restart <name>");
+      const forceRestart = args[1] === "-y" || args[1] === "--yes";
+      const restartName = forceRestart ? args[2] : args[1];
+      if (!restartName) {
+        console.error("Usage: pty restart [-y] <name>");
         process.exit(1);
       }
-      await cmdRestart(args[1]);
+      await cmdRestart(restartName, forceRestart);
       break;
     }
 
@@ -460,7 +463,7 @@ async function cmdKill(name: string): Promise<void> {
   }
 }
 
-async function cmdRestart(name: string): Promise<void> {
+async function cmdRestart(name: string, force = false): Promise<void> {
   try {
     validateName(name);
   } catch (e: any) {
@@ -475,18 +478,26 @@ async function cmdRestart(name: string): Promise<void> {
     process.exit(1);
   }
 
-  if (session.status === "running") {
-    console.error(
-      `Session "${name}" is still running. Kill it first with "pty kill ${name}".`
-    );
-    process.exit(1);
-  }
-
   const meta = session.metadata;
   if (!meta) {
     console.error(`Session "${name}" has no metadata — cannot restart.`);
     cleanupAll(name);
     process.exit(1);
+  }
+
+  if (session.status === "running" && session.pid) {
+    if (!force) {
+      const answer = await ask(`Session "${name}" is running. Kill and restart? [Y/n] `);
+      if (answer.toLowerCase() === "n") {
+        process.exit(0);
+      }
+    }
+    try {
+      process.kill(session.pid, "SIGTERM");
+    } catch {}
+    cleanupSocket(name);
+    // Wait briefly for the process to exit
+    await new Promise((r) => setTimeout(r, 200));
   }
 
   cleanupAll(name);
