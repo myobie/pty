@@ -47,11 +47,16 @@ export const TERMINAL_SANITIZE =
   "\x1b[0 q" + // reset cursor style to terminal default
   "\x1b>" + // reset application keypad mode (DECKPNM)
   "\x1b(B" + // reset G0 character set to ASCII
-  "\x1b[<u"; // pop Kitty keyboard protocol mode
+  "\x1b[<99u"; // pop all Kitty keyboard protocol levels
+
+// Move cursor to bottom of visible screen so status messages (e.g.
+// "[detached]") appear below the session content, not mid-screen.
+const CURSOR_TO_BOTTOM = "\x1b[999;1H";
 
 export interface PeekOptions {
   name: string;
   follow?: boolean; // If true, stay connected and stream (like tail -f). If false, print screen and exit.
+  plain?: boolean; // If true, output plain text without ANSI codes.
   onExit?: (code: number) => void;
   onDetach?: () => void;
 }
@@ -65,7 +70,7 @@ export function peek(options: PeekOptions): void {
   const follow = options.follow ?? false;
 
   socket.on("connect", () => {
-    socket.write(encodePeek());
+    socket.write(encodePeek(options.plain));
 
     if (follow) {
       // In follow mode, Ctrl+\ detaches
@@ -78,7 +83,7 @@ export function peek(options: PeekOptions): void {
           if (data[i] === DETACH_KEY) {
             if (stdin.isTTY) stdin.setRawMode(false);
             socket.destroy();
-            stdout.write(TERMINAL_SANITIZE + "\r\n[detached]\r\n");
+            stdout.write(TERMINAL_SANITIZE + CURSOR_TO_BOTTOM + "\r\n[detached]\r\n");
             options.onDetach?.();
             return;
           }
@@ -96,7 +101,7 @@ export function peek(options: PeekOptions): void {
         case MessageType.SCREEN:
           stdout.write(packet.payload);
           if (!follow) {
-            stdout.write(TERMINAL_SANITIZE + "\n");
+            stdout.write(TERMINAL_SANITIZE + CURSOR_TO_BOTTOM + "\n");
             socket.destroy();
             return;
           }
@@ -111,7 +116,7 @@ export function peek(options: PeekOptions): void {
         case MessageType.EXIT: {
           const code = decodeExit(packet.payload);
           socket.destroy();
-          stdout.write(TERMINAL_SANITIZE);
+          stdout.write(TERMINAL_SANITIZE + CURSOR_TO_BOTTOM);
           if (follow) {
             stdout.write(`\r\n[session exited with code ${code}]\r\n`);
           }
@@ -141,6 +146,7 @@ export function peek(options: PeekOptions): void {
 export interface SendOptions {
   name: string;
   data: string[];
+  delayMs?: number;
 }
 
 /** Send data to a session without attaching. Silent on success. */
@@ -148,9 +154,12 @@ export function send(options: SendOptions): void {
   const socketPath = getSocketPath(options.name);
   const socket = net.createConnection(socketPath);
 
-  socket.on("connect", () => {
-    for (const item of options.data) {
-      socket.write(encodeData(item));
+  socket.on("connect", async () => {
+    for (let i = 0; i < options.data.length; i++) {
+      if (i > 0 && options.delayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+      }
+      socket.write(encodeData(options.data[i]));
     }
     socket.end();
   });
@@ -245,7 +254,7 @@ export function attach(options: AttachOptions): void {
                 detaching = true;
                 socket.write(encodeDetach());
                 cleanExit();
-                stdout.write(TERMINAL_SANITIZE + "\r\n[detached]\r\n");
+                stdout.write(TERMINAL_SANITIZE + CURSOR_TO_BOTTOM + "\r\n[detached]\r\n");
                 options.onDetach?.();
               }
             }, DOUBLE_TAP_MS);
@@ -294,7 +303,7 @@ export function attach(options: AttachOptions): void {
         case MessageType.EXIT:
           exitCode = decodeExit(packet.payload);
           cleanExit();
-          stdout.write(TERMINAL_SANITIZE + `\r\n[session exited with code ${exitCode}]\r\n`);
+          stdout.write(TERMINAL_SANITIZE + CURSOR_TO_BOTTOM + `\r\n[session exited with code ${exitCode}]\r\n`);
           options.onExit?.(exitCode);
           return;
       }

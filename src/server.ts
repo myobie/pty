@@ -234,10 +234,15 @@ export class PtyServer {
 
           case MessageType.PEEK: {
             client.readonly = true;
+            const plain = packet.payload.length > 0 && packet.payload.readUInt8(0) === 1;
 
-            // Send current screen state (same as ATTACH)
-            const peekScreen = this.getModePrefix() + this.serialize.serialize();
-            socket.write(encodeScreen(peekScreen));
+            if (plain) {
+              socket.write(encodeScreen(this.getPlainScreen()));
+            } else {
+              // Send current screen state (same as ATTACH)
+              const peekScreen = this.getModePrefix() + this.serialize.serialize();
+              socket.write(encodeScreen(peekScreen));
+            }
 
             if (this.exited) {
               socket.write(encodeExit(this.exitCode));
@@ -318,6 +323,22 @@ export class PtyServer {
     for (const client of this.clients.values()) {
       client.socket.write(data);
     }
+  }
+
+  private getPlainScreen(): string {
+    const buffer = this.terminal.buffer.active;
+    const lines: string[] = [];
+    for (let i = 0; i < buffer.length; i++) {
+      const line = buffer.getLine(i);
+      if (line) {
+        lines.push(line.translateToString(true));
+      }
+    }
+    // Trim trailing empty lines
+    while (lines.length > 0 && lines[lines.length - 1] === "") {
+      lines.pop();
+    }
+    return lines.join("\n");
   }
 
   private getLastLines(): string[] {

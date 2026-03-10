@@ -29,9 +29,11 @@ function usage(): void {
   pty attach <name>                        Attach to an existing session
   pty attach -r <name>                     Attach, auto-restart if exited
   pty peek <name>                          Print current screen and exit
+  pty peek --plain <name>                  Print current screen as plain text (no ANSI)
   pty peek -f <name>                       Follow output read-only (Ctrl+\\ to stop)
   pty send <name> "text"                   Send text to a session
   pty send <name> --seq "text" --seq key:return  Send an ordered sequence
+  pty send <name> --with-delay 0.5 --seq ...     Delay between each --seq item
   pty restart <name>                       Restart an exited session
   pty list                                 List active sessions
   pty list --json                          List sessions as JSON
@@ -119,10 +121,18 @@ async function main(): Promise<void> {
     }
 
     case "peek": {
-      const follow = args[1] === "-f" || args[1] === "--follow";
-      const peekName = follow ? args[2] : args[1];
+      let follow = false;
+      let plain = false;
+      let pi = 1;
+      while (pi < args.length && args[pi].startsWith("-")) {
+        if (args[pi] === "-f" || args[pi] === "--follow") follow = true;
+        else if (args[pi] === "--plain") plain = true;
+        else break;
+        pi++;
+      }
+      const peekName = args[pi];
       if (!peekName) {
-        console.error("Usage: pty peek [-f] <name>");
+        console.error("Usage: pty peek [-f] [--plain] <name>");
         process.exit(1);
       }
       try {
@@ -131,7 +141,7 @@ async function main(): Promise<void> {
         console.error(e.message);
         process.exit(1);
       }
-      cmdPeek(peekName, follow);
+      cmdPeek(peekName, follow, plain);
       break;
     }
 
@@ -148,7 +158,19 @@ async function main(): Promise<void> {
         process.exit(1);
       }
 
-      const sendArgs = args.slice(2);
+      let sendArgs = args.slice(2);
+      let delaySecs: number | undefined;
+      if (sendArgs[0] === "--with-delay") {
+        sendArgs = sendArgs.slice(1);
+        const val = parseFloat(sendArgs[0]);
+        if (isNaN(val) || val < 0) {
+          console.error("--with-delay requires a non-negative number (seconds).");
+          process.exit(1);
+        }
+        delaySecs = val;
+        sendArgs = sendArgs.slice(1);
+      }
+
       const hasSeq = sendArgs.includes("--seq");
       const hasPositional = sendArgs.length > 0 && !sendArgs[0].startsWith("--");
 
@@ -180,7 +202,7 @@ async function main(): Promise<void> {
         process.exit(1);
       }
 
-      send({ name: sendName, data });
+      send({ name: sendName, data, delayMs: delaySecs != null ? delaySecs * 1000 : undefined });
       break;
     }
 
@@ -350,10 +372,11 @@ function doAttach(name: string): void {
   });
 }
 
-function cmdPeek(name: string, follow: boolean): void {
+function cmdPeek(name: string, follow: boolean, plain: boolean): void {
   peek({
     name,
     follow,
+    plain,
     onDetach: () => process.exit(0),
     onExit: (code) => process.exit(code),
   });

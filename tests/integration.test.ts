@@ -874,6 +874,47 @@ describe("integration", () => {
       expect(screenPackets.length).toBe(0);
     });
 
+    it("sends items with delay between them", async () => {
+      const name = uniqueName();
+      await startServer(name, "cat");
+
+      const watcher = await connect(name);
+      const watchReader = new PacketReader();
+      watcher.write(encodeAttach(24, 80));
+      await waitForType(watcher, watchReader, MessageType.SCREEN);
+
+      // Track timestamps of received DATA packets
+      const timestamps: number[] = [];
+      const watchReader2 = new PacketReader();
+      let output = "";
+      watcher.on("data", (data: Buffer) => {
+        for (const p of watchReader2.feed(data)) {
+          if (p.type === MessageType.DATA) {
+            timestamps.push(Date.now());
+            output += p.payload.toString();
+          }
+        }
+      });
+
+      // Send items with 200ms delay between each
+      const { send } = await import("../src/client.ts");
+      send({ name, data: ["A", "B", "C"], delayMs: 200 });
+
+      // Wait for all items to arrive
+      await new Promise((r) => setTimeout(r, 1000));
+
+      expect(output).toContain("A");
+      expect(output).toContain("B");
+      expect(output).toContain("C");
+
+      // There should be measurable gaps between items (at least 100ms to account for timing jitter)
+      expect(timestamps.length).toBeGreaterThanOrEqual(2);
+      const firstGap = timestamps[1] - timestamps[0];
+      expect(firstGap).toBeGreaterThanOrEqual(100);
+
+      watcher.destroy();
+    });
+
     it("connection to non-existent session produces error", async () => {
       const name = uniqueName();
 
@@ -884,6 +925,58 @@ describe("integration", () => {
       });
       expect(error.code).toMatch(/ENOENT|ECONNREFUSED/);
     });
+  });
+
+  it("peek with plain flag returns text without ANSI codes", async () => {
+    const name = uniqueName();
+    // Print colored output with ANSI codes
+    await startServer(name, "sh", [
+      "-c",
+      "printf '\\033[32mGREEN TEXT\\033[0m'; printf '\\033[1;31mBOLD RED\\033[0m'; sleep 30",
+    ]);
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Normal peek — should contain ANSI escape sequences
+    const normalPeeker = await connect(name);
+    const normalReader = new PacketReader();
+    normalPeeker.write(encodePeek(false));
+    const normalScreen = await waitForType(normalPeeker, normalReader, MessageType.SCREEN);
+    const normalOutput = normalScreen.payload.toString();
+    expect(normalOutput).toContain("GREEN TEXT");
+    expect(normalOutput).toContain("\x1b["); // ANSI escape present
+    normalPeeker.destroy();
+
+    // Plain peek — should NOT contain ANSI escape sequences
+    const plainPeeker = await connect(name);
+    const plainReader = new PacketReader();
+    plainPeeker.write(encodePeek(true));
+    const plainScreen = await waitForType(plainPeeker, plainReader, MessageType.SCREEN);
+    const plainOutput = plainScreen.payload.toString();
+    expect(plainOutput).toContain("GREEN TEXT");
+    expect(plainOutput).toContain("BOLD RED");
+    expect(plainOutput).not.toContain("\x1b["); // no ANSI escapes
+    plainPeeker.destroy();
+  });
+
+  it("peek plain trims trailing blank lines", async () => {
+    const name = uniqueName();
+    await startServer(name, "sh", ["-c", "echo 'only line'; sleep 30"], {
+      rows: 24,
+      cols: 80,
+    });
+    await new Promise((r) => setTimeout(r, 200));
+
+    const peeker = await connect(name);
+    const reader = new PacketReader();
+    peeker.write(encodePeek(true));
+    const screen = await waitForType(peeker, reader, MessageType.SCREEN);
+    const output = screen.payload.toString();
+
+    // Should have the content but not 24 rows of blank lines
+    expect(output).toContain("only line");
+    const lines = output.split("\n");
+    expect(lines.length).toBeLessThan(10);
+    peeker.destroy();
   });
 
   // Detach/reattach: the mode was active, TERMINAL_SANITIZE popped it on

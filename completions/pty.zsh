@@ -43,11 +43,13 @@ _pty() {
         peek)
           _arguments \
             '(-f --follow)'{-f,--follow}'[Follow output read-only]' \
+            '--plain[Output plain text without ANSI codes]' \
             '1:session:_pty_sessions'
           ;;
         send)
           _arguments \
             '1:session:_pty_sessions' \
+            '--with-delay[Delay between --seq items (seconds)]:seconds:' \
             '*--seq[Send a sequence item]:value:'
           ;;
         kill|restart)

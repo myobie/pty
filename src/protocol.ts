@@ -55,8 +55,10 @@ export function encodeExit(code: number): Buffer {
   return encodePacket(MessageType.EXIT, payload);
 }
 
-export function encodePeek(): Buffer {
-  return encodePacket(MessageType.PEEK, Buffer.alloc(0));
+export function encodePeek(plain = false): Buffer {
+  const payload = Buffer.alloc(1);
+  payload.writeUInt8(plain ? 1 : 0, 0);
+  return encodePacket(MessageType.PEEK, payload);
 }
 
 export function encodeScreen(data: string): Buffer {
