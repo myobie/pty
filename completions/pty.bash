@@ -24,6 +24,20 @@ _pty() {
         COMPREPLY=($(compgen -W "${names}" -- "${cur}"))
       fi
       ;;
+    run)
+      # After --, fall back to default file completion
+      local i
+      for (( i=2; i < COMP_CWORD; i++ )); do
+        if [[ "${COMP_WORDS[i]}" == "--" ]]; then
+          COMPREPLY=($(compgen -o default -- "${cur}"))
+          return
+        fi
+      done
+      # Before --, complete flags
+      if [[ "${cur}" == -* ]]; then
+        COMPREPLY=($(compgen -W "--detach -d --attach -a" -- "${cur}"))
+      fi
+      ;;
   esac
 }
 

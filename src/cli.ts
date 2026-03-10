@@ -258,13 +258,15 @@ async function cmdRun(
     process.exit(1);
   }
 
-  // Clean up any dead session with the same name
+  // Clean up any dead session with the same name, but preserve cwd
+  // so that `run -a` re-creates the session in the original directory.
+  const previousCwd = session?.status === "exited" ? session.metadata?.cwd : undefined;
   if (session?.status === "exited") {
     cleanupAll(name);
   }
 
   try {
-    await spawnDaemon(name, command, args, displayCommand);
+    await spawnDaemon(name, command, args, displayCommand, previousCwd);
   } finally {
     releaseLock(name);
   }

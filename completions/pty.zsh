@@ -54,11 +54,20 @@ _pty() {
           _arguments '1:session:_pty_sessions'
           ;;
         run)
+          # After --, fall back to normal (command + file) completion
+          local -i i
+          for (( i=1; i <= $#words; i++ )); do
+            if [[ "${words[$i]}" == "--" ]]; then
+              shift $i words
+              (( CURRENT -= i ))
+              _normal
+              return
+            fi
+          done
           _arguments \
             '(-d --detach)'{-d,--detach}'[Create in background]' \
             '(-a --attach)'{-a,--attach}'[Attach if already running]' \
-            '1:name:' \
-            '*:command:_command_names -e'
+            '1:name:'
           ;;
       esac
       ;;
