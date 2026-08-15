@@ -108,3 +108,8 @@ implementation contract and validation map live in [spec.md](./spec.md).
   it never removes a live or replacement generation. Semantic outcomes and
   operational failures are machine-distinguishable, and validation covers the
   snapshot-to-cleanup race with real processes.
+- **R13 Discoverable key notation:** Supported key-input surfaces resolve named
+  keys case-insensitively and accept unambiguous modifier chords using `+`,
+  `-`, or `_` separators, including compact `C-` control notation. Invalid,
+  incomplete, or ambiguous key specs fail before any sequence bytes are sent;
+  their diagnostics state the accepted modifiers, notation, and key names.

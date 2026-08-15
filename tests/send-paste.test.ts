@@ -262,3 +262,54 @@ describe("pty send strict flag parsing (#20)", () => {
     expect(received).toBe("still-works");
   }, 15_000);
 });
+
+describe("pty send key notation (#164)", () => {
+  it("delivers the common control-key spellings as equivalent bytes", async () => {
+    const dir = makeSessionDir();
+    const name = uniqueName();
+    const dump = path.join(dir, "dump.bin");
+    await startDumpSession(dir, name, dump);
+
+    const r = runCli(
+      dir,
+      "send",
+      name,
+      "--with-delay",
+      "0",
+      "--seq",
+      "key:ctrl+u",
+      "--seq",
+      "key:ctrl-u",
+      "--seq",
+      "key:ctrl_u",
+      "--seq",
+      "key:C-u",
+    );
+    expect(r.status, r.stderr).toBe(0);
+    expect(await waitForDump(dump, 4, 3000)).toBe("\x15\x15\x15\x15");
+  }, 15_000);
+
+  it("validates the whole sequence before delivering an earlier chunk", async () => {
+    const dir = makeSessionDir();
+    const name = uniqueName();
+    const dump = path.join(dir, "dump.bin");
+    await startDumpSession(dir, name, dump);
+
+    const r = runCli(
+      dir,
+      "send",
+      name,
+      "--with-delay",
+      "0",
+      "--seq",
+      "PARTIAL",
+      "--seq",
+      "key:ctrl-",
+      "--seq",
+      "AFTER",
+    );
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/Incomplete key spec.*ctrl-u.*supported keys/is);
+    expect(await waitForDump(dump, 1, 500)).toBe("");
+  }, 15_000);
+});

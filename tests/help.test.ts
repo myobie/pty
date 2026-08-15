@@ -71,6 +71,15 @@ describe("pty --help — per-subcommand help", () => {
 });
 
 describe("pty --help — no drift", () => {
+  it("documents accepted key modifier notations", () => {
+    const r = help("send");
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("key:ctrl+c");
+    expect(r.stdout).toContain("key:ctrl-c");
+    expect(r.stdout).toContain("key:C-c");
+    expect(r.stdout).toContain("_ separators");
+  });
+
   it("documents the repeatable persisted environment overlay", () => {
     const r = help("run");
     expect(r.status).toBe(0);

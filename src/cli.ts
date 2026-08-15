@@ -189,7 +189,8 @@ to send text followed by Enter, use --seq (see the second example).
 
 Flags:
   --seq <value>        Ordered chunk or key event (repeatable). key:<name> sends a
-                       key, e.g. key:return, key:ctrl+c, key:tab
+                       key, e.g. key:return, key:ctrl+c, key:ctrl-c, key:C-c.
+                       Modifiers also accept _ separators; names ignore case.
   --with-delay <sec>   Delay (seconds) between --seq items. DEFAULT 0.3s so a
                        trailing key:return doesn't race ahead of the program
                        parsing the text. --with-delay 0 = straight stream (no gap).

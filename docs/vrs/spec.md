@@ -318,6 +318,34 @@ packet order and fails explicitly when the peer lacks a capability. The testing
 library drives real processes and PTYs and exposes screen, cursor, scrollback,
 input, resize, and multi-client geometry without mocks.
 
+### Key specifications
+
+```text
+input spelling -> case fold -> exact named key / modifier chord -> bytes
+                                      |
+                                      +-> reject invalid or ambiguous input
+                                          before opening the send connection
+```
+
+The shared key resolver used by CLI, client, and testing surfaces accepts these
+equivalent, case-insensitive modifier spellings (R11, R13):
+
+| Spelling | Interpretation | Canonical diagnostic form |
+| --- | --- | --- |
+| `ctrl+u` | full modifier with `+` | `ctrl+u` |
+| `ctrl-u` | full modifier with `-` | `ctrl+u` |
+| `ctrl_u` | full modifier with `_` | `ctrl+u` |
+| `C-u` | compact control notation | `ctrl+u` |
+
+Separators may compose multiple full modifiers, such as `ctrl-alt-delete`.
+`C-` is the only compact modifier alias; `C+`, `M-`, and `S-` do not silently
+acquire meanings. A spelling that could denote both an exact named key and a
+modifier chord is ambiguous and rejected. Diagnostics for incomplete specs,
+unknown modifiers, and unknown keys include the accepted forms; unknown-key
+diagnostics also enumerate the supported named keys. `send --seq` resolves all
+key items before connecting, so one invalid item prevents every item in that
+invocation from being delivered.
+
 ## Ownership and validation matrix
 
 | Requirement | Owning source | Primary executable evidence |
@@ -334,6 +362,7 @@ input, resize, and multi-client geometry without mocks.
 | R10 | [sessions](../../src/sessions.ts), [events](../../src/events.ts), [recovery](../../src/recovery.ts), [protocol](../../src/protocol.ts) | [atomic writes](../../tests/atomic-writes.test.ts), [metadata events](../../tests/metadata-events.test.ts), [events](../../tests/events.test.ts), [recovery](../../tests/recovery.test.ts), [disk layout](../../tests/disk-layout-docs.test.ts) |
 | R11 | [CLI](../../src/cli.ts), [client API](../../src/client-api.ts), [remote](../../src/remote.ts), [testing API](../../src/testing/index.ts) | [help](../../tests/help.test.ts), [completions](../../tests/completions.test.ts), [remote](../../tests/remote-fabric.test.ts), [screenshots](../../tests/screenshot.test.ts), [keys](../../tests/keys.test.ts) |
 | R12 | [sessions](../../src/sessions.ts), [server](../../src/server.ts), [client API](../../src/client-api.ts), [CLI](../../src/cli.ts), [completions](../../src/completions.ts) | [exit evidence](../../tests/exit-reap.test.ts), [generation guard](../../tests/gc-generation-guard.test.ts), [immediate reuse](../../tests/rm-immediate-reuse.test.ts), [help](../../tests/help.test.ts), [completions](../../tests/completions.test.ts), [security](../../tests/security-fixes.test.ts) |
+| R13 | [keys](../../src/keys.ts), [CLI](../../src/cli.ts) | [keys](../../tests/keys.test.ts), [send CLI](../../tests/send-paste.test.ts), [help](../../tests/help.test.ts) |
 
 `node scripts/verify-docs.ts --vrs-only` validates this two-document shape,
 sequential requirement IDs, links, and complete requirement references.

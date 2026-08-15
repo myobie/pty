@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Key input notation
+
+- Named key input is case-insensitive and accepts `+`, `-`, or `_` modifier
+  separators plus compact `C-` Control notation, so `ctrl+u`, `ctrl-u`,
+  `ctrl_u`, and `C-u` are equivalent. Invalid or incomplete key specs now name
+  the supported forms, modifiers, and keys while preserving up-front atomic
+  validation. (closes #164)
+
 ### Storage format
 
 - Supporting live daemons now advertise a `recovery` capability in session

@@ -497,7 +497,11 @@ Resolve a key name to its byte sequence. Supports:
 - Named keys: `return`, `tab`, `escape`, `space`, `backspace`, `delete`
 - Arrows: `up`, `down`, `left`, `right`
 - Navigation: `home`, `end`, `pageup`, `pagedown`
-- Modifiers: `ctrl+c`, `alt+x`, `shift+a`
+- Modifiers: `ctrl+c`, `ctrl-c`, `ctrl_c`, `C-c`, `alt+x`, `shift+a`
+
+Key names and modifiers are case-insensitive. Modifier chords accept `+`, `-`,
+or `_` separators; compact `C-` is accepted for Control. Invalid key specs
+report the accepted notation, modifiers, and named keys.
 
 ### `parseSeqValue(value: string): string`
 

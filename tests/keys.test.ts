@@ -34,6 +34,14 @@ describe("resolveKey", () => {
     expect(resolveKey("ctrl+d")).toBe("\x04");
   });
 
+  it("accepts common unambiguous modifier notations", () => {
+    for (const spec of ["ctrl+u", "ctrl-u", "ctrl_u", "C-u", "c-u"]) {
+      expect(resolveKey(spec), spec).toBe("\x15");
+    }
+    expect(resolveKey("ctrl-alt-delete")).toBe("\x1b[3;7~");
+    expect(resolveKey("ctrl_alt+shift_up")).toBe("\x1b[1;8A");
+  });
+
   it("resolves alt chords", () => {
     expect(resolveKey("alt+x")).toBe("\x1bx");
     expect(resolveKey("alt+a")).toBe("\x1ba");
@@ -106,13 +114,18 @@ describe("resolveKey", () => {
   });
 
   it("throws on unknown key", () => {
-    expect(() => resolveKey("f99")).toThrow(/Unknown key/);
-    expect(() => resolveKey("nonexistent")).toThrow(/Unknown key/);
+    expect(() => resolveKey("f99")).toThrow(/Unknown key.*ctrl\+u.*supported keys/is);
+    expect(() => resolveKey("nonexistent")).toThrow(/Unknown key.*supported keys/is);
   });
 
   it("throws on unknown modifier", () => {
-    expect(() => resolveKey("super+c")).toThrow(/Unknown modifier/);
-    expect(() => resolveKey("meta+x")).toThrow(/Unknown modifier/);
+    expect(() => resolveKey("super+c")).toThrow(/Unknown modifier.*ctrl, alt, and shift/s);
+    expect(() => resolveKey("meta+x")).toThrow(/Unknown modifier.*ctrl\+u/s);
+  });
+
+  it("rejects incomplete or unsupported compact forms with actionable help", () => {
+    expect(() => resolveKey("ctrl-")).toThrow(/Incomplete key spec.*ctrl-u.*supported keys/is);
+    expect(() => resolveKey("C+u")).toThrow(/Unknown modifier.*C-u.*supported keys/is);
   });
 });
 
@@ -120,6 +133,8 @@ describe("parseSeqValue", () => {
   it("resolves key: prefixed values", () => {
     expect(parseSeqValue("key:return")).toBe("\r");
     expect(parseSeqValue("key:ctrl+c")).toBe("\x03");
+    expect(parseSeqValue("key:ctrl-c")).toBe("\x03");
+    expect(parseSeqValue("key:C-c")).toBe("\x03");
     expect(parseSeqValue("key:tab")).toBe("\t");
   });
 
