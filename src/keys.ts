@@ -18,6 +18,11 @@ const KEY_MAP: Record<string, string> = {
 };
 
 const MODIFIERS = new Set(["ctrl", "alt", "shift"]);
+const MODIFIER_SEPARATORS = /[+_-]/;
+const NAMED_KEYS = Object.keys(KEY_MAP).sort().join(", ");
+const KEY_SPEC_HELP =
+  `Use ctrl+u, ctrl-u, ctrl_u, or C-u; supported modifiers are ctrl, alt, and shift; ` +
+  `supported keys are a-z, ${NAMED_KEYS}.`;
 
 /** Keycodes for CSI u encoding (Kitty keyboard protocol). */
 const CSI_U_KEYCODES: Record<string, number> = {
@@ -40,16 +45,57 @@ function modifierParam(mods: Set<string>): number {
   );
 }
 
-/** Parse a key spec like `ctrl+c`, `return`, `alt+x` into bytes. */
+function normalizeModifier(mod: string, index: number, spec: string): string {
+  // Readline/tmux-style C-u is the established compact spelling for ctrl+u.
+  // Keep the one-letter alias scoped to a leading C- so C+u and other
+  // abbreviated modifier alphabets do not acquire surprise meaning.
+  if (mod === "c" && index === 0 && /^c-/i.test(spec)) return "ctrl";
+  return mod;
+}
+
+function isSupportedBase(base: string): boolean {
+  return KEY_MAP[base] !== undefined || (base.length === 1 && base >= "a" && base <= "z");
+}
+
+/** Parse a key spec like `ctrl+c`, `ctrl-c`, `C-c`, `return`, or `alt+x` into bytes. */
 export function resolveKey(spec: string): string {
-  const parts = spec.toLowerCase().split("+");
+  const normalized = spec.toLowerCase();
+  const hasSeparator = MODIFIER_SEPARATORS.test(normalized);
+  const rawParts = hasSeparator ? normalized.split(MODIFIER_SEPARATORS) : [normalized];
+  const rawBase = rawParts.at(-1) ?? "";
+  const rawMods = rawParts.slice(0, -1).map((mod, index) =>
+    normalizeModifier(mod, index, spec),
+  );
+
+  // A separator-bearing name could be both a named key and a modifier chord.
+  // Refuse that collision instead of silently changing meaning if the key map
+  // ever grows such a name.
+  const isValidChord =
+    rawBase !== "" &&
+    rawMods.length > 0 &&
+    rawMods.every((mod) => mod !== "" && MODIFIERS.has(mod)) &&
+    isSupportedBase(rawBase);
+  if (hasSeparator && KEY_MAP[normalized] !== undefined && isValidChord) {
+    throw new Error(
+      `Ambiguous key spec "${spec}": it is both a named key and a modifier chord. ${KEY_SPEC_HELP}`,
+    );
+  }
+  if (KEY_MAP[normalized] !== undefined && !isValidChord) return KEY_MAP[normalized];
+
+  const parts = rawParts;
   const base = parts.pop()!;
-  const mods = new Set(parts);
+  if (base === "" || parts.some((part) => part === "")) {
+    throw new Error(`Incomplete key spec "${spec}". ${KEY_SPEC_HELP}`);
+  }
+
+  const mods = new Set(parts.map((mod, index) => normalizeModifier(mod, index, spec)));
 
   // Validate modifiers
   for (const mod of mods) {
     if (!MODIFIERS.has(mod)) {
-      throw new Error(`Unknown modifier: "${mod}" in key spec "${spec}"`);
+      throw new Error(
+        `Unknown modifier: "${mod}" in key spec "${spec}". ${KEY_SPEC_HELP}`,
+      );
     }
   }
 
@@ -58,7 +104,10 @@ export function resolveKey(spec: string): string {
   const mapped = KEY_MAP[base];
 
   if (mapped === undefined && !isLetter) {
-    throw new Error(`Unknown key: "${base}" in key spec "${spec}"`);
+    throw new Error(
+      `Unknown key: "${base}" in key spec "${spec}". ` +
+        KEY_SPEC_HELP,
+    );
   }
 
   // Single letter keys

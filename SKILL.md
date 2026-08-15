@@ -41,6 +41,10 @@ pty kill <name>                                           # clean up when done
 ```
 Tag the sessions you create; only touch sessions you created.
 
+Key modifiers accept `+`, `-`, or `_` separators and ignore case. For example,
+`key:ctrl+u`, `key:ctrl-u`, `key:ctrl_u`, and readline-style `key:C-u` are
+equivalent.
+
 ## Footguns (the ones that actually bite)
 - **A broken global `pty` on `$PATH` silently breaks the whole message bus.**
   `st` / smalltalk delivery shells out to `pty send` found on `$PATH`. If a

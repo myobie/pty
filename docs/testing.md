@@ -96,7 +96,8 @@ await session.close();
 
 ### press(keyName)
 
-Send a named key. Supports modifiers with `+`:
+Send a named key. Names are case-insensitive; modifier chords accept `+`, `-`,
+or `_`, and compact `C-` means Control:
 
 ```typescript test
 import { Session } from "@compoundingtech/pty/testing";
@@ -204,9 +205,9 @@ The `press()` method accepts these key names:
 | Page Up | `pageup` |
 | Page Down | `pagedown` |
 
-Modifiers: `ctrl+`, `alt+`, `shift+`
+Modifiers: `ctrl`, `alt`, `shift`; use `+`, `-`, or `_` as the separator.
 
-Examples: `ctrl+c`, `ctrl+z`, `alt+x`, `shift+a`, `ctrl+backspace`
+Examples: `ctrl+c`, `ctrl-c`, `ctrl_c`, `C-c`, `alt+x`, `shift+a`, `ctrl+backspace`
 
 ## Patterns
 
