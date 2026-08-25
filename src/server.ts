@@ -65,6 +65,12 @@ import {
   type RecoveryResultPayload,
 } from "./recovery.ts";
 import type { StatsResult } from "./client.ts";
+import {
+  signalProcessIdentities,
+  snapshotDescendantProcesses,
+  terminateProcessIdentities,
+  type ProcessIdentity,
+} from "./process-tree.ts";
 
 interface Client {
   socket: net.Socket;
@@ -306,6 +312,7 @@ export class PtyServer {
   private recoveryInFlight = false;
   private recoveryWatcher: fs.FSWatcher | null = null;
   private lastTitle = "";
+  private shutdownDescendants: ProcessIdentity[] = [];
   readonly ready: Promise<void>;
   // Resolves when the child process's onExit has fired — used by close() to
   // make sure session_exit has been queued to the event chain before we
@@ -1330,7 +1337,17 @@ export class PtyServer {
   }
 
   /** Clean up resources. Does not call process.exit(). */
-  close(): Promise<void> {
+  close(options: { terminateDescendants?: boolean } = {}): Promise<void> {
+    if (options.terminateDescendants && this.shutdownDescendants.length === 0) {
+      try {
+        this.shutdownDescendants = snapshotDescendantProcesses(this.ptyProcess.pid);
+      } catch (error) {
+        console.error(
+          `pty daemon "${this.name}": could not snapshot child processes: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
     if (this.recoveryRoot) {
       try { this.recoveryWatcher?.close(); } catch {}
       this.recoveryWatcher = null;
@@ -1357,15 +1374,32 @@ export class PtyServer {
         try {
           this.ptyProcess.kill();
         } catch {}
+        const descendantsDone = options.terminateDescendants
+          ? terminateProcessIdentities(this.shutdownDescendants)
+          : Promise.resolve([]);
         // Wait for the child's onExit to fire (which enqueues session_exit)
         // before draining the writer. Without this, SIGTERM-initiated
         // shutdowns race: kill() returns synchronously but onExit fires
         // later, after we've already flushed. Bound with a short timeout in
         // case the child never exits (shouldn't happen — we just killed it).
-        await Promise.race([
-          this.childExited,
-          new Promise<void>((r) => setTimeout(r, 2000)),
+        const childExited = await Promise.race([
+          this.childExited.then(() => true),
+          new Promise<false>((r) => setTimeout(() => r(false), 2000)),
         ]);
+        if (!childExited) {
+          try { this.ptyProcess.kill("SIGKILL"); } catch {}
+          await Promise.race([
+            this.childExited,
+            new Promise<void>((r) => setTimeout(r, 500)),
+          ]);
+        }
+        const survivingDescendants = await descendantsDone;
+        if (survivingDescendants.length > 0) {
+          console.error(
+            `pty daemon "${this.name}": ${survivingDescendants.length} child process(es) ` +
+            "did not exit after exact TERM and KILL signals",
+          );
+        }
         if (this.exited) await this.saveExitMetadataUntilSettled(this.exitCode);
         try { await this.eventWriter.flush(); } catch {}
         resolve();
@@ -1380,6 +1414,7 @@ export class PtyServer {
    *  Best-effort — a SIGKILL is unblockable, but the child may already be gone. */
   forceKillChild(): void {
     try { this.ptyProcess.kill("SIGKILL"); } catch {}
+    signalProcessIdentities(this.shutdownDescendants, "SIGKILL");
   }
 }
 
@@ -1521,7 +1556,7 @@ if (process.argv[1]?.endsWith("/server.js")) {
       } catch {}
       process.exit(code);
     }, SHUTDOWN_DEADLINE_MS);
-    shutdownPromise = server.close().then(() => {
+    shutdownPromise = server.close({ terminateDescendants: externalKill }).then(() => {
       clearTimeout(deadline);
       // `close()` has already re-flushed exit metadata with the final
       // `lastLines`, so this reads the same tags a `pty gc` sweep would
