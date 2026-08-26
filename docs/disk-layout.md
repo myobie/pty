@@ -66,9 +66,14 @@ Pretty-printed JSON. Source of truth: `SessionMetadata` in `src/sessions.ts`.
   tags?: { [k: string]: string };
   displayName?: string;
   lastAttachAt?: string;      // ISO 8601 — set by the daemon on every non-readonly ATTACH
-  lastOutputAtMs?: number;      // unix ms — set by the daemon, debounced ≤1/s, on the last PTY output chunk
+  lastOutputAtMs?: number;    // unix ms — newest PTY output observed by the daemon
 }
 ```
+
+`lastOutputAtMs` is absent until the daemon observes output. While output
+continues, a trailing-edge debounce persists the newest stamp at most once per
+second; exit finalization carries the final in-memory value even when a debounce
+is pending.
 
 `unsetEnv` and `extraEnv` form the persisted inherited-environment policy.
 Removals are applied first and explicit assignments second, so an assignment

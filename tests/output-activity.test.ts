@@ -42,9 +42,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
-async function startDaemon(sessionDir: string, name: string): Promise<void> {
+async function startDaemon(
+  sessionDir: string,
+  name: string,
+  command = "cat",
+  args: string[] = [],
+): Promise<void> {
   const config = JSON.stringify({
-    name, command: "cat", args: [], displayCommand: "cat",
+    name, command, args, displayCommand: [command, ...args].join(" "),
     cwd: os.tmpdir(), rows: 24, cols: 80,
   });
   const child = spawn(nodeBin, [serverModule], {
@@ -80,10 +85,16 @@ function runCli(sessionDir: string, ...args: string[]) {
   });
 }
 
-function readLastOutputAtMs(sessionDir: string, name: string): number | undefined {
+function readMetadata(sessionDir: string, name: string): Record<string, unknown> {
   const raw: unknown = JSON.parse(fs.readFileSync(path.join(sessionDir, `${name}.json`), "utf8"));
-  if (typeof raw !== "object" || raw === null || !("lastOutputAtMs" in raw)) return undefined;
-  const value = (raw as { lastOutputAtMs: unknown }).lastOutputAtMs;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new Error("Session metadata must be a JSON object");
+  }
+  return raw as Record<string, unknown>;
+}
+
+function readLastOutputAtMs(sessionDir: string, name: string): number | undefined {
+  const value = readMetadata(sessionDir, name).lastOutputAtMs;
   return typeof value === "number" ? value : undefined;
 }
 
@@ -163,5 +174,17 @@ describe("lastOutputAtMs session activity stamp", () => {
       const stamp = readLastOutputAtMs(sessionDir, name);
       return stamp !== undefined && stamp > first;
     }, 5000);
+  });
+
+  it("carries the final output stamp into exit metadata before debounce", async () => {
+    const sessionDir = makeSessionDir();
+    const name = uniqueName();
+    await startDaemon(sessionDir, name, "sh", ["-c", "printf final-output"]);
+    runningDaemons.push({ sessionDir, name });
+
+    // The pending activity timer skips once exited, so observing both fields
+    // after exit proves saveExitMetadata carried the in-memory final stamp.
+    await waitFor(() => typeof readMetadata(sessionDir, name).exitCode === "number");
+    expect(readLastOutputAtMs(sessionDir, name)).toEqual(expect.any(Number));
   });
 });

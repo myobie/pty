@@ -16,6 +16,9 @@ implementation contract and validation map live in [spec.md](./spec.md).
   not authorization.
 - **A03 Terminal semantics:** Child output is an ordered terminal byte stream.
   Reconstructing it requires a terminal emulator rather than line-oriented logs.
+- **A04 Output observation:** The per-session daemon necessarily observes every
+  PTY output chunk to maintain terminal state. Recording when output last
+  occurred adds no second observer and carries no launcher or harness semantics.
 
 ## Acceptable tradeoffs
 
@@ -113,3 +116,11 @@ implementation contract and validation map live in [spec.md](./spec.md).
   `-`, or `_` separators, including compact `C-` control notation. Invalid,
   incomplete, or ambiguous key specs fail before any sequence bytes are sent;
   their diagnostics state the accepted modifiers, notation, and key names.
+- **R14 Durable output-activity evidence:** Session metadata exposes an optional
+  unix-millisecond `lastOutputAtMs` timestamp. The daemon stamps it in the
+  existing output path and persists the newest value through the same locked,
+  generation-aware metadata mutation, debounced to at most one write per second
+  per busy session. Exit finalization carries the final in-memory stamp. The
+  field reports evidence only: PTY does not classify active/idle, infer liveness,
+  or authorize lifecycle/delivery behavior. Older records without the field
+  remain valid.
