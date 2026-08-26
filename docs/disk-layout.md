@@ -66,6 +66,7 @@ Pretty-printed JSON. Source of truth: `SessionMetadata` in `src/sessions.ts`.
   tags?: { [k: string]: string };
   displayName?: string;
   lastAttachAt?: string;      // ISO 8601 — set by the daemon on every non-readonly ATTACH
+  lastOutputAt?: string;      // ISO 8601 — set by the daemon, debounced ≤1/s, on the last PTY output chunk
 }
 ```
 
