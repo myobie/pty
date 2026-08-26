@@ -1321,11 +1321,11 @@ export class PtyServer {
     setTimeout(() => {
       this.activityPersistScheduled = false;
       if (this.exited || this.lastOutputAtMs === 0) return;
-      const iso = new Date(this.lastOutputAtMs).toISOString();
+      const stampedAtMs = this.lastOutputAtMs;
       try {
         mutateMetadataUnderLock(this.name, (metadata) => {
-          if (metadata.lastOutputAt === iso) return false;
-          metadata.lastOutputAt = iso;
+          if (metadata.lastOutputAtMs === stampedAtMs) return false;
+          metadata.lastOutputAtMs = stampedAtMs;
           return true;
         });
       } catch {
@@ -1341,7 +1341,7 @@ export class PtyServer {
       metadata.exitedAt = new Date().toISOString();
       metadata.lastLines = this.getLastLines();
       if (this.lastOutputAtMs > 0) {
-        metadata.lastOutputAt = new Date(this.lastOutputAtMs).toISOString();
+        metadata.lastOutputAtMs = this.lastOutputAtMs;
       }
       return true;
     }, { expectedGeneration: this.generation });

@@ -1,4 +1,4 @@
-// Tests for the daemon-stamped `lastOutputAt` session metadata field: the
+// Tests for the daemon-stamped `lastOutputAtMs` session metadata field: the
 // daemon stamps every PTY output chunk in-memory and persists it debounced
 // (≤1 write/second) so downstream consumers (st2 observed harness state) can
 // derive session activity without observing the output stream themselves.
@@ -80,11 +80,11 @@ function runCli(sessionDir: string, ...args: string[]) {
   });
 }
 
-function readLastOutputAt(sessionDir: string, name: string): string | undefined {
+function readLastOutputAtMs(sessionDir: string, name: string): number | undefined {
   const raw: unknown = JSON.parse(fs.readFileSync(path.join(sessionDir, `${name}.json`), "utf8"));
-  if (typeof raw !== "object" || raw === null || !("lastOutputAt" in raw)) return undefined;
-  const value = (raw as { lastOutputAt: unknown }).lastOutputAt;
-  return typeof value === "string" ? value : undefined;
+  if (typeof raw !== "object" || raw === null || !("lastOutputAtMs" in raw)) return undefined;
+  const value = (raw as { lastOutputAtMs: unknown }).lastOutputAtMs;
+  return typeof value === "number" ? value : undefined;
 }
 
 async function waitFor(
@@ -117,17 +117,17 @@ afterAll(() => {
   fs.rmSync(testRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 });
 
-describe("lastOutputAt session activity stamp", () => {
+describe("lastOutputAtMs session activity stamp", () => {
   it("is absent before the session produces any output", async () => {
     const sessionDir = makeSessionDir();
     const name = uniqueName();
     await startDaemon(sessionDir, name);
     runningDaemons.push({ sessionDir, name });
 
-    expect(readLastOutputAt(sessionDir, name)).toBeUndefined();
+    expect(readLastOutputAtMs(sessionDir, name)).toBeUndefined();
   });
 
-  it("appears after output and carries a recent ISO timestamp", async () => {
+  it("appears after output and carries a recent unix-millisecond timestamp", async () => {
     const sessionDir = makeSessionDir();
     const name = uniqueName();
     await startDaemon(sessionDir, name);
@@ -138,9 +138,9 @@ describe("lastOutputAt session activity stamp", () => {
     const sent = runCli(sessionDir, "send", name, "--seq", "activity-probe", "--seq", "key:return");
     expect(sent.status).toBe(0);
 
-    await waitFor(() => readLastOutputAt(sessionDir, name) !== undefined);
+    await waitFor(() => readLastOutputAtMs(sessionDir, name) !== undefined);
 
-    const stampedAt = new Date(readLastOutputAt(sessionDir, name)!).getTime();
+    const stampedAt = readLastOutputAtMs(sessionDir, name)!;
     expect(stampedAt).toBeGreaterThanOrEqual(before - 1000);
     expect(stampedAt).toBeLessThanOrEqual(Date.now() + 1000);
   });
@@ -152,16 +152,16 @@ describe("lastOutputAt session activity stamp", () => {
     runningDaemons.push({ sessionDir, name });
 
     runCli(sessionDir, "send", name, "--seq", "first", "--seq", "key:return");
-    await waitFor(() => readLastOutputAt(sessionDir, name) !== undefined);
-    const first = new Date(readLastOutputAt(sessionDir, name)!).getTime();
+    await waitFor(() => readLastOutputAtMs(sessionDir, name) !== undefined);
+    const first = readLastOutputAtMs(sessionDir, name)!;
 
     // Wait out the 1s debounce window so the second burst cannot coalesce
     // into the first persist, then require the stamp to move forward.
     await sleep(1600);
     runCli(sessionDir, "send", name, "--seq", "second", "--seq", "key:return");
     await waitFor(() => {
-      const stamp = readLastOutputAt(sessionDir, name);
-      return stamp !== undefined && new Date(stamp).getTime() > first;
+      const stamp = readLastOutputAtMs(sessionDir, name);
+      return stamp !== undefined && stamp > first;
     }, 5000);
   });
 });
