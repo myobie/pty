@@ -292,7 +292,8 @@ Examples:
 
   kill: `Usage: pty kill <ref>
 
-SIGTERM a running session's daemon. Metadata is kept — restart or \`pty rm\` it later.
+Terminate a running session's daemon and exact descendant tree. Metadata is kept —
+restart or \`pty rm\` it later.
 
 Examples:
   pty kill myserver`,
@@ -556,7 +557,7 @@ Modify:
 Lifecycle:
   pty restart <ref>                       SIGTERM + respawn using stored metadata (prompts if running)
   pty restart -y <ref>                    Same, no prompt
-  pty kill <ref>                          SIGTERM a running session's daemon
+  pty kill <ref>                          Terminate a running session and its descendants
   pty recover <name> --snapshot <file>    Rebind a supporting live daemon after registry unlink
   pty rm <ref>                            Remove an exited session's metadata (alias: pty remove)
   pty evidence remove --id <id> --expected-generation <opaque>
@@ -2640,7 +2641,7 @@ async function cmdKill(name: string): Promise<void> {
     process.kill(session.pid, "SIGTERM");
   } catch {
     console.error(`Failed to kill session "${name}".`);
-    cleanupSocket(name);
+    process.exitCode = 1;
     return;
   }
 
@@ -2648,9 +2649,18 @@ async function cmdKill(name: string): Promise<void> {
   // exit metadata to disk (an atomic tmp-write + rename); if we returned while
   // that was still in flight, a caller that immediately `pty rm`s the session
   // could race the late write and leave a stray temp file behind. Bounded — the
-  // SIGTERM shutdown path settles in ~2s; if it somehow overruns we clean up and
-  // return anyway (the daemon finishes on its own).
-  await waitForProcessExit(session.pid, 3000);
+  // SIGTERM shutdown path settles in ~2s. If it overruns, preserve the socket
+  // evidence and return a loud failure. Returning success while the daemon is alive
+  // makes the next start look broken and hides the process that blocked it.
+  const exited = await waitForProcessExit(session.pid, 7000);
+  if (!exited) {
+    console.error(
+      `Failed to kill session "${name}": daemon PID ${session.pid} is still running ` +
+      `after 7s. Socket ${getSocketPath(name)} may still be owned.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
   cleanupSocket(name);
   console.log(`Session "${name}" killed.`);
 

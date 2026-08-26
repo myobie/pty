@@ -2120,10 +2120,10 @@ export function isProcessAlive(pid: number): boolean {
 export async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (!isProcessAlive(pid)) return true;
+    if (hasProcessExitedForReap(pid)) return true;
     await new Promise((r) => setTimeout(r, 50));
   }
-  return !isProcessAlive(pid);
+  return hasProcessExitedForReap(pid);
 }
 
 async function probeSocketsWithinBudget(

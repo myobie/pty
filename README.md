@@ -107,7 +107,7 @@ pty emit myserver user.build.finished --json '{"ok":true}'  # with JSON payload
 pty emit myserver user.note --text "checkpoint reached"     # with a text payload
 
 pty restart myserver                      # restart an exited session (must have been preserved)
-pty kill myserver                         # terminate a running session
+pty kill myserver                         # terminate a running session and its descendants
 pty --root /state/pty recover myserver --snapshot ./myserver.json  # rebind a live supporting daemon after external unlink
 pty rm myserver                           # remove an exited session's metadata
 pty gc                                    # reconcile: kill orphan children, respawn permanents, sweep vanished

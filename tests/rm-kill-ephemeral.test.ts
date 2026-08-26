@@ -156,6 +156,20 @@ describe("pty kill", () => {
     expect(result.status).not.toBe(0);
     expect(result.stdout).toContain("not found");
   }, 15000);
+
+  it("returns a loud nonzero error when the daemon does not stop", async () => {
+    const dir = makeSessionDir();
+    const name = uniqueName();
+    const daemonPid = await startDaemon(dir, name, "cat");
+    process.kill(daemonPid, "SIGSTOP");
+
+    const result = runCli(dir, "kill", name);
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain(`daemon PID ${daemonPid} is still running after 7s`);
+    expect(result.stdout).toContain(`${name}.sock may still be owned`);
+
+    process.kill(daemonPid, "SIGKILL");
+  }, 15000);
 });
 
 // --- pty rm ---

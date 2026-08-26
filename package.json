@@ -28,7 +28,8 @@
     "LICENSE"
   ],
   "bin": {
-    "pty": "./bin/pty"
+    "pty": "./bin/pty",
+    "pty-kill-releases-socket-test": "./bin/pty-kill-releases-socket-test"
   },
   "exports": {
     "./testing": {

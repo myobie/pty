@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Complete session termination
+
+- `pty kill` now stops the PTY child and its complete descendant tree. A
+  background descendant that previously survived `pty kill` now stops.
+- Descendants are captured before the PTY child exits. Each PID remains bound
+  to its process-start identity before every exact signal, which prevents a
+  reused PID from becoming a target. The shutdown never signals a process
+  group. It sends TERM first and uses KILL only for an exact descendant that
+  ignores the bounded grace period.
+- `pty kill` now returns a nonzero error when its daemon remains alive after
+  seven seconds. The error names the daemon PID and socket instead of reporting
+  success before a blocked replacement start.
+- The installed `pty-kill-releases-socket-test` command performs a real
+  kill-then-restart cycle. It succeeds only when the replacement owns the same
+  Unix socket without manual cleanup.
+
 ### Key input notation
 
 - Named key input is case-insensitive and accepts `+`, `-`, or `_` modifier
