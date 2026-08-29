@@ -282,6 +282,14 @@ export class PtyServer {
   private clients = new Map<net.Socket, Client>();
   private exited = false;
   private exitCode = 0;
+  /** Epoch ms of the last PTY output chunk this daemon processed. Stamped in
+   *  the onData path (O(1) — the chunk is already being parsed), persisted to
+   *  session metadata through the debounced `scheduleActivityPersist` so a
+   *  chatty session costs at most one metadata write per second. Consumers
+   *  (st2 observed harness state) read the persisted value to derive session
+   *  activity; this field is the in-memory source of truth between persists. */
+  private lastOutputAtMs = 0;
+  private activityPersistScheduled = false;
   private name: string;
   private options: ServerOptions;
   private attachCounter = 0;
@@ -561,6 +569,8 @@ export class PtyServer {
     // handlers above and must NOT be forwarded to clients — otherwise the
     // client's terminal responds and its response appears as garbage input.
     this.ptyProcess.onData((data: string) => {
+      this.lastOutputAtMs = Date.now();
+      this.scheduleActivityPersist();
       this.terminal.write(data);
       const cleaned = stripTerminalQueries(data);
       if (cleaned.length > 0) {
@@ -1308,11 +1318,38 @@ export class PtyServer {
     return lines.slice(-SESSION_EXIT_LAST_LINES_LIMIT);
   }
 
+  /** Trailing-edge debounce: the first output chunk after an idle period
+   *  schedules one persist ~1s out; bursts inside the window coalesce into
+   *  that single write carrying the newest stamp. Skipped once exited — the
+   *  exit path persists the final stamp via `saveExitMetadata`. */
+  private scheduleActivityPersist(): void {
+    if (this.activityPersistScheduled) return;
+    this.activityPersistScheduled = true;
+    setTimeout(() => {
+      this.activityPersistScheduled = false;
+      if (this.exited || this.lastOutputAtMs === 0) return;
+      const stampedAtMs = this.lastOutputAtMs;
+      try {
+        mutateMetadataUnderLock(this.name, (metadata) => {
+          if (metadata.lastOutputAtMs === stampedAtMs) return false;
+          metadata.lastOutputAtMs = stampedAtMs;
+          return true;
+        });
+      } catch {
+        // Best-effort: a lost activity stamp reads as a slightly staler
+        // activity sample; it must never take the daemon down.
+      }
+    }, 1000);
+  }
+
   private saveExitMetadata(exitCode: number): MetadataMutationResult["status"] {
     const result = mutateMetadataUnderLock(this.name, (metadata) => {
       metadata.exitCode = exitCode;
       metadata.exitedAt = new Date().toISOString();
       metadata.lastLines = this.getLastLines();
+      if (this.lastOutputAtMs > 0) {
+        metadata.lastOutputAtMs = this.lastOutputAtMs;
+      }
       return true;
     }, { expectedGeneration: this.generation });
     return result.status;

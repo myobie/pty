@@ -170,6 +170,29 @@ Metadata and events form two compatibility tiers (R10):
 | event JSONL | externally readable observation stream; serialized append and bounded retention |
 | socket packets | internal bounded protocol with documented legacy decoding fallbacks |
 
+### Output-activity evidence
+
+Session metadata may carry:
+
+```ts
+lastOutputAtMs?: number
+```
+
+The value is unix milliseconds for the newest PTY output chunk the daemon has
+processed. The `onData` path stamps the value in memory before feeding the same
+chunk to the headless terminal and clients. A trailing-edge one-second debounce
+persists the newest stamp through the locked metadata mutation; further chunks
+inside the window coalesce into that write. Child exit persists the final
+in-memory stamp with exit metadata, so a pending debounce cannot lose the last
+output observation (R14).
+
+The timestamp is deliberately numeric: consumers performing freshness
+arithmetic need no RFC3339 parser, and other runtime/state contracts already use
+unix milliseconds. It is evidence rather than interpretation — PTY does not
+define an activity threshold or label a session active/idle. Missing
+`lastOutputAtMs` means no durable output observation (a new silent session or a
+record from an older daemon), never zero or idle.
+
 Explicit lifecycle commands and `gc` own mutation. Cleanup is authorized by the
 observed generation; removal wins over late daemon finalization, and permanent
 respawn cannot overwrite a replacement (R03, R10).
@@ -363,6 +386,7 @@ invocation from being delivered.
 | R11 | [CLI](../../src/cli.ts), [client API](../../src/client-api.ts), [remote](../../src/remote.ts), [testing API](../../src/testing/index.ts) | [help](../../tests/help.test.ts), [completions](../../tests/completions.test.ts), [remote](../../tests/remote-fabric.test.ts), [screenshots](../../tests/screenshot.test.ts), [keys](../../tests/keys.test.ts) |
 | R12 | [sessions](../../src/sessions.ts), [server](../../src/server.ts), [client API](../../src/client-api.ts), [CLI](../../src/cli.ts), [completions](../../src/completions.ts) | [exit evidence](../../tests/exit-reap.test.ts), [generation guard](../../tests/gc-generation-guard.test.ts), [immediate reuse](../../tests/rm-immediate-reuse.test.ts), [help](../../tests/help.test.ts), [completions](../../tests/completions.test.ts), [security](../../tests/security-fixes.test.ts) |
 | R13 | [keys](../../src/keys.ts), [CLI](../../src/cli.ts) | [keys](../../tests/keys.test.ts), [send CLI](../../tests/send-paste.test.ts), [help](../../tests/help.test.ts) |
+| R14 | [server](../../src/server.ts), [sessions](../../src/sessions.ts) | [output activity](../../tests/output-activity.test.ts), [disk layout](../../tests/disk-layout-docs.test.ts) |
 
 `node scripts/verify-docs.ts --vrs-only` validates this two-document shape,
 sequential requirement IDs, links, and complete requirement references.

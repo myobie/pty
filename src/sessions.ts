@@ -178,6 +178,14 @@ export interface SessionMetadata {
    *  client attach — those are excluded from idle-reap (a session that
    *  was just spawned but not yet attached to isn't "idle"). */
   lastAttachAt?: string;
+  /** Unix-millisecond timestamp of the last PTY output chunk the daemon processed.
+   *  Written by the daemon, debounced to at most one persist per second while
+   *  output flows (the daemon already parses every byte, so stamping is O(1)
+   *  and adds no observation machinery). Absent on sessions that have produced
+   *  no output yet. Consumers — e.g. st2's observed harness state — derive
+   *  session activity from this; it is an activity signal, not a delivery or
+   *  liveness signal. */
+  lastOutputAtMs?: number;
 }
 
 export interface SessionInfo {
