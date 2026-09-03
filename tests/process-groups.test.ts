@@ -21,7 +21,8 @@ import { snapshotDescendantProcesses } from "../src/process-tree.ts";
 // 2026-09-03.
 const ROWS = ["100 1 100 Ss", "200 100 200 Ss", "300 200 200 S", "400 300 400 S", "900 1 900 S"].join("\n");
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 const live = (groups: number[]) => membersOfGroups(groups, parseRows(listProcessesWithGroups()));
 
 describe("choosing which process groups to sweep", () => {

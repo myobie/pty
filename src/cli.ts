@@ -47,7 +47,7 @@ import {
   type SessionMetadata,
 } from "./sessions.ts";
 import { snapshotDescendantProcesses } from "./process-tree.ts";
-import { aftermathOf, allGone, killOutcomeLines } from "./kill-report.ts";
+import { aftermathOf, allGone, killOutcomeLines, verifiedEmpty } from "./kill-report.ts";
 import {
   groupsInTree, listProcessesWithGroups, membersOfGroups, ownProcessGroup,
   parseRows, signalGroup, sweepGroups,
@@ -2715,10 +2715,8 @@ async function cmdKill(name: string): Promise<void> {
   const outcome = killOutcomeLines(name, after, escalated);
   for (const line of outcome.out) console.log(line);
   for (const line of outcome.err) console.error(line);
-  // Anything left is a failure, and the status says so. `unknown` counts:
-  // "I could not confirm the tree is empty" is not success, and a caller that
-  // reads 0 as done would be wrong.
-  if (!allGone(after)) process.exitCode = 1;
+  // Anything left is a failure, and the status says so.
+  if (!verifiedEmpty(after, escalated)) process.exitCode = 1;
 
   if (wasPermanent && session.metadata?.tags?.ptyfile) {
     console.error(`Note: this session is managed by ${session.metadata.tags.ptyfile}`);

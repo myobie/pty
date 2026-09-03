@@ -8,6 +8,7 @@ import {
   aftermathOf,
   allGone,
   killOutcomeLines,
+  verifiedEmpty,
   type Aftermath,
 } from "../src/kill-report.ts";
 import { hasProcessExitedForReap, reapedFromPsState } from "../src/sessions.ts";
@@ -145,6 +146,22 @@ describe("what the command prints", () => {
     expect(lines.out).toEqual(['Session "s" daemon stopped.']);
     expect(lines.err[0]).toContain("may still be running");
     expect(lines.err[0]).toContain("is not a conclusion");
+  });
+
+  // A process the sweep could not kill need not appear in Aftermath at all: the
+  // snapshot drops anything whose start token could not be read, and a process
+  // spawned after the snapshot was never in it. Reading the snapshot alone would
+  // print the success line over a process that just survived SIGKILL.
+  it("never calls a tree empty while the escalation left something running", () => {
+    expect(allGone(clean)).toBe(true);
+    expect(verifiedEmpty(clean, [4321])).toBe(false);
+    expect(verifiedEmpty(clean, [])).toBe(true);
+    expect(verifiedEmpty(clean, undefined)).toBe(true);
+    expect(verifiedEmpty({ survived: [1], unknown: [] }, [])).toBe(false);
+
+    const lines = killOutcomeLines("s", clean, [4321]);
+    expect(lines.out.some((l) => l.includes("killed"))).toBe(false);
+    expect(lines.err.join(" ")).toContain("survived SIGKILL");
   });
 
   // A reader who greps for the success line must not find it beside a warning
