@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   acquireLock, getEventsPath, getSocketPath, readMetadata, releaseLock,
   validateDisplayName,
+  isProcessAlive,
 } from "./sessions.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -228,6 +229,27 @@ async function spawnViaNode(options: SpawnDaemonOptions, serverModule: string): 
         metadata.daemonPid === child.pid &&
         hasPublishedSessionStart(options.name, metadata.createdAt);
       if (startPublished) break;
+      // **Read the fact that is already there before waiting for one that is
+      // not.** If somebody else has published this name, this attempt can never
+      // win: the check above compares against our own pid and stays false for
+      // the rest of the budget. The only other way out of this loop is noticing
+      // our own daemon die, so when that is slow — a loaded machine, a daemon
+      // still starting up — the loop spends the whole start timeout and then
+      // reports a timeout, when the true answer was on disk in the first pass.
+      //
+      // Measured on a Mac by Silber.pty on 2026-09-03: the losing `pty run`
+      // took 30.06 s against a 30 s budget and said "Timed out waiting for
+      // daemon publication" instead of "is already running".
+      if (publishedElsewhere(metadata?.daemonPid ?? null, child.pid ?? -1, isProcessAlive, () =>
+        metadata !== null && hasPublishedSessionStart(options.name, metadata.createdAt),
+      )) {
+        // Deliberately the same sentence `pty run` prints when it sees a
+        // running session before it spawns. Losing the race later should not
+        // produce a different explanation of the same situation.
+        throw new Error(
+          `Session "${options.name}" is already running. Use "pty attach ${options.name}" to connect.`,
+        );
+      }
       checkEarlyExit();
       if (Date.now() - startedAt >= timeoutMs) {
         throw new Error(`Timed out waiting for daemon publication for session "${options.name}".`);
@@ -240,6 +262,25 @@ async function spawnViaNode(options: SpawnDaemonOptions, serverModule: string): 
     }
     throw err;
   }
+}
+
+/** Has this session been published by a live process that is not us?
+ *
+ *  All three conditions matter. **Published**, or we would refuse a name whose
+ *  metadata is still being written. **By a different pid**, or we would refuse
+ *  our own success. **By a live one**, or stale metadata from a daemon that died
+ *  would make the name permanently unusable.
+ *
+ *  Kept separate from the registry so all four ways of answering "no" can be
+ *  tested rather than raced for. */
+export function publishedElsewhere(
+  owner: number | null,
+  mine: number,
+  alive: (pid: number) => boolean,
+  published: () => boolean,
+): boolean {
+  if (owner === null) return false;
+  return owner !== mine && alive(owner) && published();
 }
 
 function hasPublishedSessionStart(name: string, createdAt: string): boolean {
