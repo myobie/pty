@@ -1395,10 +1395,16 @@ export class PtyServer {
         }
         const survivingDescendants = await descendantsDone;
         if (survivingDescendants.length > 0) {
+          const pids = survivingDescendants.map((d) => d.pid);
           console.error(
             `pty daemon "${this.name}": ${survivingDescendants.length} child process(es) ` +
-            "did not exit after exact TERM and KILL signals",
+            `did not exit after exact TERM and KILL signals: ${pids.join(", ")}`,
           );
+          // And somewhere a person can find it. The warning above goes to this
+          // daemon's standard error, which has had no reader since the command
+          // that launched it stopped listening — so the one moment it has
+          // something worth saying is the one moment nobody is there.
+          this.emitEvent(EventType.SESSION_DESCENDANTS_SURVIVED, { data: { pids } });
         }
         if (this.exited) await this.saveExitMetadataUntilSettled(this.exitCode);
         try { await this.eventWriter.flush(); } catch {}
