@@ -19,8 +19,12 @@
   error warning names the PIDs. The daemon's standard error has no reader, so
   the log line is the copy a person can find.
 - `pty kill` sends no additional signals and waits no longer than before.
-- The exit status is unchanged. `pty kill` still exits 0 when the daemon stops,
-  even with survivors.
+- **Compatibility break.** `pty kill` now exits non-zero when anything survived,
+  and when a start token could not be read so the outcome is undecided. A script
+  that checks the status of `pty kill` will fail where it used to pass, because
+  it was passing on a false success. The fix for such a caller is to stop
+  treating an unverified kill as a completed one. A verified empty tree still
+  exits 0.
 - On macOS, an empty `ps -o stat=` field no longer counts as a dead process.
   An empty field means the process is gone or `ps` did not answer, and under
   load `ps` is the thing that goes quiet, so the kernel is asked again.
