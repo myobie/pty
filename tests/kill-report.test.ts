@@ -12,12 +12,13 @@ import {
   type Aftermath,
 } from "../src/kill-report.ts";
 import { hasProcessExitedForReap, reapedFromPsState } from "../src/sessions.ts";
-import { readProcessStartToken } from "../src/recovery.ts";
+import { openSource, valueOf } from "../src/proc-table.ts";
 import type { ProcessIdentity } from "../src/process-tree.ts";
+import { liveIdentity } from "../src/proc-table.ts";
 
 const identity = (pid: number, token: string): ProcessIdentity => ({
   pid,
-  processStartToken: token,
+  identity: liveIdentity(token),
   depth: 1,
 });
 
@@ -61,19 +62,24 @@ describe("classifying against the real process table", () => {
   it("sees a running process, then stops seeing it", async () => {
     const child = spawn("sleep", ["30"], { stdio: "ignore" });
     const pid = child.pid!;
-    const token = readProcessStartToken(pid);
+    const token = valueOf(openSource().identity(pid));
     expect(token).not.toBeNull();
     const before = [identity(pid, token!)];
 
-    expect(aftermathOf(before, readProcessStartToken, hasProcessExitedForReap).survived)
-      .toEqual([pid]);
+    expect(
+      aftermathOf(before, (p) => valueOf(openSource().identity(p)), hasProcessExitedForReap)
+        .survived,
+    ).toEqual([pid]);
 
     child.kill("SIGKILL");
     await new Promise((r) => child.once("exit", r));
     await sleep(50);
 
-    expect(allGone(aftermathOf(before, readProcessStartToken, hasProcessExitedForReap)))
-      .toBe(true);
+    expect(
+      allGone(
+        aftermathOf(before, (p) => valueOf(openSource().identity(p)), hasProcessExitedForReap),
+      ),
+    ).toBe(true);
   });
 
   // A zombie answers kill(pid, 0) and keeps a readable start token, so the two
@@ -88,7 +94,7 @@ describe("classifying against the real process table", () => {
       const pid = await new Promise<number>((resolve) =>
         sh.stdout!.once("data", (d) => resolve(Number(String(d).trim()))),
       );
-      const token = readProcessStartToken(pid);
+      const token = valueOf(openSource().identity(pid));
       expect(token).not.toBeNull();
       const before = [identity(pid, token!)];
 
@@ -96,9 +102,12 @@ describe("classifying against the real process table", () => {
       for (let i = 0; i < 100 && !hasProcessExitedForReap(pid); i++) await sleep(10);
 
       expect(hasProcessExitedForReap(pid)).toBe(true);
-      expect(readProcessStartToken(pid)).toBe(token);
-      expect(allGone(aftermathOf(before, readProcessStartToken, hasProcessExitedForReap)))
-        .toBe(true);
+      expect(valueOf(openSource().identity(pid))).toBe(token);
+      expect(
+        allGone(
+          aftermathOf(before, (p) => valueOf(openSource().identity(p)), hasProcessExitedForReap),
+        ),
+      ).toBe(true);
     } finally {
       sh.kill("SIGKILL");
     }

@@ -49,9 +49,9 @@ import {
 import { snapshotDescendantProcesses } from "./process-tree.ts";
 import { aftermathOf, allGone, killOutcomeLines, verifiedEmpty } from "./kill-report.ts";
 import {
-  groupsInTree, listProcessesWithGroups, membersOfGroups, ownProcessGroup,
-  parseRows, signalGroup, sweepGroups,
+  groupsInTree, membersOfGroups, ownProcessGroup, signalGroup, sweepGroups,
 } from "./process-groups.ts";
+import { openSource, valueOf } from "./proc-table.ts";
 import { spawnDaemon, resolveCommand } from "./spawn.ts";
 import {
   acquireEventLock, appendEventSyncLocked, EventFollower, EventWriter, EventType, releaseEventLock,
@@ -2641,7 +2641,7 @@ const ESCALATE_KILL_WAIT_MS = 1_000;
  *  table. Returns the pids still alive in those groups. */
 async function escalateOverGroups(groups: number[]): Promise<number[]> {
   return sweepGroups(groups, ownProcessGroup(), ESCALATE_TERM_WAIT_MS, ESCALATE_KILL_WAIT_MS, {
-    live: (targets) => membersOfGroups(targets, parseRows(listProcessesWithGroups())),
+    live: (targets) => membersOfGroups(targets, openSource()),
     signal: signalGroup,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   });
@@ -2677,7 +2677,7 @@ async function cmdKill(name: string): Promise<void> {
   // Groups come from the raw listing, NOT from `before`. The snapshot drops a
   // descendant whose start token cannot be read, and that process is then never
   // signalled. A group needs no identity, so this reaches it anyway.
-  const groups = groupsInTree(session.pid, parseRows(listProcessesWithGroups()));
+  const groups = groupsInTree(session.pid, openSource());
 
   try {
     process.kill(session.pid, "SIGTERM");
@@ -2710,7 +2710,12 @@ async function cmdKill(name: string): Promise<void> {
     escalated = await escalateOverGroups(groups);
     // Re-measure. The report must describe the machine now, not the signals
     // that were sent at it.
-    after = aftermathOf(before, readProcessStartToken, hasProcessExitedForReap);
+    const again = openSource();
+    after = aftermathOf(
+      before,
+      (pid) => valueOf(again.identity(pid)),
+      hasProcessExitedForReap,
+    );
   }
   const outcome = killOutcomeLines(name, after, escalated);
   for (const line of outcome.out) console.log(line);

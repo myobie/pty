@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as net from "node:net";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { openSource } from "./proc-table.ts";
 import {
   assertPrivateRecoveryPaths,
   atomicWritePrivate,
@@ -805,20 +806,14 @@ type ReapObservedResult =
  *  has a readable start token, so the cheap predicates call a corpse a survivor. */
 export function hasProcessExitedForReap(pid: number): boolean {
   if (!isProcessAlive(pid)) return true;
-  try {
-    if (process.platform === "linux") {
-      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
-      const stateOffset = stat.lastIndexOf(") ") + 2;
-      return stateOffset >= 2 && stat[stateOffset] === "Z";
-    }
-    const state = execFileSync("ps", ["-o", "stat=", "-p", String(pid)], {
-      encoding: "utf8",
-      timeout: 1000,
-    }).trim();
-    return reapedFromPsState(state, () => isProcessAlive(pid));
-  } catch {
-    return !isProcessAlive(pid);
-  }
+  // One `/proc` read on Linux, one `ps` call on macOS — and never one per
+  // process inside a poll loop, which is what this used to be.
+  const answer = openSource().isRunning(pid);
+  if (answer.kind === "known") return !answer.value;
+  if (answer.kind === "not-present") return true;
+  // We did not find out. Ask the kernel once more rather than reading our own
+  // silence as a death.
+  return !isProcessAlive(pid);
 }
 
 /** Read a `ps -o stat=` field. `stillAlive` is asked only when the field is

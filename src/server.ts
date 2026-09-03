@@ -216,6 +216,10 @@ export interface ProcessResources {
 /** Query CPU and memory usage for a process via ps. Returns null on failure. */
 function queryProcessResources(pid: number): ProcessResources | null {
   try {
+    // The only per-pid `ps` left in the daemon, and only off Linux. Resident
+    // set and CPU are not in `/proc/<pid>/stat` in the form this wants, and a
+    // stats query is one call for one session rather than one per descendant
+    // inside a loop.
     const output = execFileSync("ps", ["-o", "rss=,pcpu=", "-p", String(pid)], {
       encoding: "utf-8",
       timeout: 1000,
