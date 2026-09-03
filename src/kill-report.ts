@@ -65,9 +65,27 @@ export function aftermathOf(
 export function killOutcomeLines(
   name: string,
   after: Aftermath,
+  /** Pids still alive after the escalation swept the session's process groups,
+   *  or undefined when no escalation ran. An empty array means it ran and
+   *  cleared everything. */
+  escalated?: number[],
 ): { out: string[]; err: string[] } {
-  if (allGone(after)) return { out: [`Session "${name}" killed.`], err: [] };
+  if (allGone(after)) {
+    // Say when the escalation was needed. A silent success would hide that the
+    // daemon's teardown left something behind, which is the fact somebody
+    // debugging this wants.
+    const line = escalated
+      ? `Session "${name}" killed (the escalation stopped the remainder).`
+      : `Session "${name}" killed.`;
+    return { out: [line], err: [] };
+  }
   const err: string[] = [];
+  if (escalated && escalated.length > 0) {
+    err.push(
+      `Session "${name}": ${escalated.length} process(es) survived SIGKILL to ` +
+      `their process group: ${escalated.join(", ")}`,
+    );
+  }
   if (after.survived.length > 0) {
     err.push(
       `Session "${name}": ${after.survived.length} process(es) survived the kill ` +

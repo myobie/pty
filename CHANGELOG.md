@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### `pty kill` finishes the job
+
+- After the daemon has gone, `pty kill` re-reads the process table. If anything
+  from its pre-kill snapshot is still alive, it signals the process groups the
+  session left behind, waits, escalates to SIGKILL, reads the table again, and
+  reports what is still there. The daemon tears the tree down on its way out, so
+  its teardown races its own exit; the command outlives the daemon and can
+  finish the work.
+- The sweep targets process groups rather than PIDs, because a group signal
+  needs no per-process identity. A descendant whose process-start token cannot
+  be read is dropped from the snapshot and never signalled individually; its
+  group is still swept. The sweep also costs one `ps` call in total, against one
+  per descendant for tokens.
+- The daemon's own process group is never signalled. The PTY child calls
+  `setsid`, so the daemon is alone in its group. The group of the process
+  running `pty kill` is never signalled either, so the command survives to
+  report. Group id 1 and below are never signalled.
+- A zombie no longer counts as a process-group member. `ps` lists it with its
+  group, so counting it made the sweep report a group it had already emptied.
+
 ### `pty kill` reports what it verified
 
 - `pty kill` prints `Session "X" killed.` only when the session's process tree
