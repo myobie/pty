@@ -120,6 +120,45 @@ export function openSource(): ProcessSource {
   return onLinux ? new DirectSource() : new SnapshotSource(readPsTable());
 }
 
+/** One process, without reading the whole table.
+ *
+ *  A poll loop asking about a single pid should not pay for every process on
+ *  the machine. On Linux this is one small file read and no subprocess.
+ *
+ *  **On macOS it is still one `ps` per call, and that is Node's floor.** The
+ *  Rust tool makes a syscall here; Node cannot without a native module. What
+ *  this avoids is the larger whole-table listing, not the spawn.
+ */
+export function processOf(pid: number): Answer<Row> {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return notPresent();
+  if (onLinux) return new DirectSource().row(pid);
+  let out: string;
+  try {
+    out = execFileSync(
+      "ps",
+      ["-o", "pid=,ppid=,pgid=,state=,rss=,pcpu=,lstart=", "-p", String(pid)],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: PS_TIMEOUT_MS },
+    );
+  } catch {
+    // `ps` exits non-zero when the pid is not there, which is indistinguishable
+    // from `ps` failing. Ask the kernel, which does distinguish them.
+    return processExists(pid) ? unknown("table-unreadable") : notPresent();
+  }
+  const row = parsePsRow(out);
+  if (row) return known(row);
+  // It ran and said nothing about this pid.
+  return processExists(pid) ? unknown("field-empty") : notPresent();
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 /** Linux: answer each question from `/proc` as it is asked. */
 class DirectSource implements ProcessSource {
   row(pid: number): Answer<Row> {
