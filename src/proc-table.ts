@@ -144,7 +144,19 @@ export function processOf(pid: number): Answer<Row> {
     // from `ps` failing. Ask the kernel, which does distinguish them.
     return processExists(pid) ? unknown("table-unreadable") : notPresent();
   }
-  const row = parsePsRow(out);
+  // **One parser, not two.** An earlier version handed the subprocess's raw
+  // stdout to the single-line parser, which rejected the trailing newline every
+  // `ps` prints — so a live process read as "field-empty" and a zombie read as
+  // NOT EXITED, which would make the teardown wait out its whole budget for a
+  // corpse. That is the corpse defect again, reintroduced on macOS by a second
+  // parsing path that Linux never exercised. Found on a real Mac by
+  // `Silber.pty` on 2026-09-03.
+  //
+  // `parsePsListing` splits lines first and checks that the row for the pid we
+  // asked about is actually there, so both jobs are done by the code that was
+  // already tested.
+  const rows = parsePsListing(out, pid);
+  const row = rows?.find((r) => r.pid === pid);
   if (row) return known(row);
   // It ran and said nothing about this pid.
   return processExists(pid) ? unknown("field-empty") : notPresent();
