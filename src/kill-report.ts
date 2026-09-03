@@ -30,6 +30,19 @@ export function allGone(after: Aftermath): boolean {
   return after.survived.length === 0 && after.unknown.length === 0;
 }
 
+/** Did the command verify that nothing is left?
+ *
+ *  **Both halves are required.** `Aftermath` only describes the processes that
+ *  were in the pre-kill snapshot, and the snapshot drops anything whose start
+ *  token could not be read. A process the sweep found and could not kill may
+ *  therefore be absent from `after` entirely. Reading `after` alone would print
+ *  the success line over a process that just survived SIGKILL, which is the
+ *  defect this command exists to stop making.
+ */
+export function verifiedEmpty(after: Aftermath, escalated?: number[]): boolean {
+  return allGone(after) && (escalated === undefined || escalated.length === 0);
+}
+
 /** Re-check a snapshot against the live process table.
  *
  *  `exited` must be `hasProcessExitedForReap`, not `!isProcessAlive`. A zombie
@@ -70,7 +83,7 @@ export function killOutcomeLines(
    *  cleared everything. */
   escalated?: number[],
 ): { out: string[]; err: string[] } {
-  if (allGone(after)) {
+  if (verifiedEmpty(after, escalated)) {
     // Say when the escalation was needed. A silent success would hide that the
     // daemon's teardown left something behind, which is the fact somebody
     // debugging this wants.
