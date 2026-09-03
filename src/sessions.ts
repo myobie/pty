@@ -809,9 +809,11 @@ type ReapObservedResult =
 
 /** Is `pid` gone for reaping purposes? A zombie counts as exited.
  *
- *  Exported because `pty kill` needs the same question answered. `!isProcessAlive`
- *  is not a substitute: an unreaped process still answers `kill(pid, 0)` and still
- *  has a readable start token, so the cheap predicates call a corpse a survivor. */
+ *  Exported because `pty kill` and the spawner both need the same question
+ *  answered. `isProcessAlive` is not a substitute: an unreaped process still
+ *  answers `kill(pid, 0)` and still has a readable start token, so the cheap
+ *  predicates call a corpse alive — a survivor to the one, a live owner to the
+ *  other. */
 export function hasProcessExitedForReap(pid: number): boolean {
   if (!isProcessAlive(pid)) return true;
   // One `/proc` read on Linux and no subprocess. On macOS this is still one
