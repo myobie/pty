@@ -133,6 +133,7 @@ Envelope: `{ session: string; type: string; ts: string; ...payload }`. Event typ
 | `session_respawn` | — (`pty gc` respawned a `strategy=permanent` session) |
 | `session_abandoned` | `reason: "cwd-gone" \| "idle", idleDays?` — (`pty gc` reaped a live permanent session detected as abandoned) |
 | `session_flapping` | `counter, limit, window` — (`pty gc` flipped a permanent session to `strategy.status=flapping` after N consecutive fast-fail respawns; subsequent ticks skip it) |
+| `session_descendants_survived` | `data: { pids }` — a daemon signalled its child's process tree with TERM and then KILL and these processes were still alive. A record of what it could not kill, not a list of everything that outlived the session: a process that left the tree before the snapshot is not in it |
 | `display_name_change` | `previous: string\|null, value: string\|null` |
 | `tags_change` | `previous, value` (full snapshots) |
 | `metadata_change` | `previous, value` containing only changed `displayName` and tag keys; absent tag values are `null` |

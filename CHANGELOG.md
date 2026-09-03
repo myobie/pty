@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### `pty kill` reports what it verified
+
+- `pty kill` prints `Session "X" killed.` only when the session's process tree
+  is gone. It takes a snapshot of the tree before it signals the daemon, and
+  re-checks that snapshot after the daemon exits. Before this, the command
+  asked about the daemon and reported about the session, so the success line
+  was a claim about processes it never looked at.
+- When something outlives the kill, the command prints
+  `Session "X" daemon stopped.` on standard output, which is the part it
+  verified, and names the surviving PIDs on standard error. A PID is called a
+  survivor only when its process-start token still matches. A PID that has not
+  exited but whose token cannot be read is reported separately as undecided.
+- A daemon that could not kill a descendant now appends
+  `session_descendants_survived` to the session event log, and its standard
+  error warning names the PIDs. The daemon's standard error has no reader, so
+  the log line is the copy a person can find.
+- `pty kill` sends no additional signals and waits no longer than before.
+- The exit status is unchanged. `pty kill` still exits 0 when the daemon stops,
+  even with survivors.
+- On macOS, an empty `ps -o stat=` field no longer counts as a dead process.
+  An empty field means the process is gone or `ps` did not answer, and under
+  load `ps` is the thing that goes quiet, so the kernel is asked again.
+
 ### Complete session termination
 
 - `pty kill` now stops the PTY child and its complete descendant tree. A
@@ -27,6 +50,12 @@
   validation. (closes #164)
 
 ### Storage format
+
+- New event type `session_descendants_survived`, carrying `data: { pids }`.
+  A daemon appends it when it signalled its child's process tree with TERM and
+  then KILL and found processes still alive. It records what the daemon could
+  not kill; a process that left the tree before the snapshot is not in it.
+
 
 - Supporting live daemons now advertise a `recovery` capability in session
   metadata. `pty recover <name> --snapshot <file>` uses that captured

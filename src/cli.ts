@@ -42,9 +42,12 @@ import {
   getPidPath,
   getMetadataPath,
   DEFAULT_SESSION_DIR,
+  hasProcessExitedForReap,
   type SessionInfo,
   type SessionMetadata,
 } from "./sessions.ts";
+import { snapshotDescendantProcesses } from "./process-tree.ts";
+import { aftermathOf, killOutcomeLines } from "./kill-report.ts";
 import { spawnDaemon, resolveCommand } from "./spawn.ts";
 import {
   acquireEventLock, appendEventSyncLocked, EventFollower, EventWriter, EventType, releaseEventLock,
@@ -2637,6 +2640,12 @@ async function cmdKill(name: string): Promise<void> {
     } catch {}
   }
 
+  // Take the tree BEFORE the signal. After the daemon exits its children are
+  // reparented to init or a subreaper, so the parent links that identify them
+  // as this session's processes are gone. This snapshot is the only chance to
+  // learn which processes the word "killed" would be a claim about.
+  const before = snapshotDescendantProcesses(session.pid);
+
   try {
     process.kill(session.pid, "SIGTERM");
   } catch {
@@ -2662,7 +2671,12 @@ async function cmdKill(name: string): Promise<void> {
     return;
   }
   cleanupSocket(name);
-  console.log(`Session "${name}" killed.`);
+  const outcome = killOutcomeLines(
+    name,
+    aftermathOf(before, readProcessStartToken, hasProcessExitedForReap),
+  );
+  for (const line of outcome.out) console.log(line);
+  for (const line of outcome.err) console.error(line);
 
   if (wasPermanent && session.metadata?.tags?.ptyfile) {
     console.error(`Note: this session is managed by ${session.metadata.tags.ptyfile}`);

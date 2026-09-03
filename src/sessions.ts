@@ -806,7 +806,12 @@ type ReapObservedResult =
     signalled: boolean;
   };
 
-function hasProcessExitedForReap(pid: number): boolean {
+/** Is `pid` gone for reaping purposes? A zombie counts as exited.
+ *
+ *  Exported because `pty kill` needs the same question answered. `!isProcessAlive`
+ *  is not a substitute: an unreaped process still answers `kill(pid, 0)` and still
+ *  has a readable start token, so the cheap predicates call a corpse a survivor. */
+export function hasProcessExitedForReap(pid: number): boolean {
   if (!isProcessAlive(pid)) return true;
   try {
     if (process.platform === "linux") {
@@ -818,10 +823,24 @@ function hasProcessExitedForReap(pid: number): boolean {
       encoding: "utf8",
       timeout: 1000,
     }).trim();
-    return state === "" || state.startsWith("Z");
+    return reapedFromPsState(state, () => isProcessAlive(pid));
   } catch {
     return !isProcessAlive(pid);
   }
+}
+
+/** Read a `ps -o stat=` field. `stillAlive` is asked only when the field is
+ *  empty, and it is a FRESH answer rather than the one taken before `ps` ran.
+ *
+ *  An empty field is two answers wearing one shape: the process is gone, or
+ *  `ps` did not manage to say. Reading it as "gone" is a failure folded into an
+ *  answer about what is there — so on an empty field we ask the kernel again
+ *  instead of reading silence as death. Under load on macOS `ps` is exactly
+ *  the thing that goes quiet. */
+export function reapedFromPsState(state: string, stillAlive: () => boolean): boolean {
+  if (state.startsWith("Z")) return true;
+  if (state === "") return !stillAlive();
+  return false;
 }
 
 /** Signal only after proving ownership, then reacquire after daemon shutdown
