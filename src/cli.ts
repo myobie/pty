@@ -48,6 +48,10 @@ import {
 } from "./sessions.ts";
 import { snapshotDescendantProcesses } from "./process-tree.ts";
 import { aftermathOf, allGone, killOutcomeLines } from "./kill-report.ts";
+import {
+  groupsInTree, listProcessesWithGroups, membersOfGroups, ownProcessGroup,
+  parseRows, signalGroup, sweepGroups,
+} from "./process-groups.ts";
 import { spawnDaemon, resolveCommand } from "./spawn.ts";
 import {
   acquireEventLock, appendEventSyncLocked, EventFollower, EventWriter, EventType, releaseEventLock,
@@ -297,6 +301,14 @@ Examples:
 
 Terminate a running session's daemon and exact descendant tree. Metadata is kept —
 restart or \`pty rm\` it later.
+
+The daemon tears the tree down on its way out, which races its own exit. So once
+the daemon has gone, \`pty kill\` re-reads the process table, signals any process
+group the session left behind, and reports what is still there. It exits non-zero
+unless it verified the tree is empty.
+
+A descendant that calls setsid leaves the session and the group, and neither the
+tree walk nor the group sweep can reach it.
 
 Examples:
   pty kill myserver`,
@@ -2618,6 +2630,23 @@ function formatUptime(seconds: number | null): string {
   return `${d}d ${h % 24}h`;
 }
 
+/** How long the escalation gives a group to answer SIGTERM before it stops
+ *  asking. A coding agent was measured ignoring SIGTERM for ten seconds, so
+ *  this grace is a courtesy, not a plan. */
+const ESCALATE_TERM_WAIT_MS = 2_000;
+/** How long to wait after SIGKILL before reporting what is still there. */
+const ESCALATE_KILL_WAIT_MS = 1_000;
+
+/** TERM the groups, wait, KILL what is left, wait, then re-read the process
+ *  table. Returns the pids still alive in those groups. */
+async function escalateOverGroups(groups: number[]): Promise<number[]> {
+  return sweepGroups(groups, ownProcessGroup(), ESCALATE_TERM_WAIT_MS, ESCALATE_KILL_WAIT_MS, {
+    live: (targets) => membersOfGroups(targets, parseRows(listProcessesWithGroups())),
+    signal: signalGroup,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  });
+}
+
 async function cmdKill(name: string): Promise<void> {
   const session = await getSession(name);
 
@@ -2645,6 +2674,10 @@ async function cmdKill(name: string): Promise<void> {
   // as this session's processes are gone. This snapshot is the only chance to
   // learn which processes the word "killed" would be a claim about.
   const before = snapshotDescendantProcesses(session.pid);
+  // Groups come from the raw listing, NOT from `before`. The snapshot drops a
+  // descendant whose start token cannot be read, and that process is then never
+  // signalled. A group needs no identity, so this reaches it anyway.
+  const groups = groupsInTree(session.pid, parseRows(listProcessesWithGroups()));
 
   try {
     process.kill(session.pid, "SIGTERM");
@@ -2671,8 +2704,15 @@ async function cmdKill(name: string): Promise<void> {
     return;
   }
   cleanupSocket(name);
-  const after = aftermathOf(before, readProcessStartToken, hasProcessExitedForReap);
-  const outcome = killOutcomeLines(name, after);
+  let after = aftermathOf(before, readProcessStartToken, hasProcessExitedForReap);
+  let escalated: number[] | undefined;
+  if (!allGone(after)) {
+    escalated = await escalateOverGroups(groups);
+    // Re-measure. The report must describe the machine now, not the signals
+    // that were sent at it.
+    after = aftermathOf(before, readProcessStartToken, hasProcessExitedForReap);
+  }
+  const outcome = killOutcomeLines(name, after, escalated);
   for (const line of outcome.out) console.log(line);
   for (const line of outcome.err) console.error(line);
   // Anything left is a failure, and the status says so. `unknown` counts:
