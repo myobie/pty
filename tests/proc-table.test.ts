@@ -14,7 +14,7 @@ import {
   unknown,
   valueOf,
 } from "../src/proc-table.ts";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -45,6 +45,50 @@ describe("the truncation guard", () => {
   it("keeps the lstart text exactly as ps printed it", () => {
     const rows = parsePsListing(`${me} 1 ${me} S 100 0.5 Wed Sep  3 11:00:00 2026\n`);
     expect(rows![0].identity).toBe("darwin:Wed Sep  3 11:00:00 2026");
+  });
+});
+
+describe("the shape a subprocess actually returns", () => {
+  // `ps` prints a trailing newline. An earlier version passed raw stdout to the
+  // single-line parser, whose `$` does not match before one, so a live process
+  // read as "field-empty" and a zombie read as not exited. There is now one
+  // parser and these pin its input shape.
+  const row = "94908 94907 94576 Z         0   0.0 Thu Sep  3 14:05:44 2026    ";
+
+  it("parses a row that ends in a newline", () => {
+    const rows = parsePsListing(`${row}\n`, 94908);
+    expect(rows).not.toBeNull();
+    expect(rows![0]).toMatchObject({ pid: 94908, ppid: 94907, pgid: 94576, state: "Z" });
+  });
+
+  it("parses a row with no trailing newline", () => {
+    expect(parsePsListing(row, 94908)).not.toBeNull();
+  });
+
+  it("keeps the lstart text through a trailing newline", () => {
+    const rows = parsePsListing(`${row}\n`, 94908);
+    expect(rows![0].identity).toBe("darwin:Thu Sep  3 14:05:44 2026");
+  });
+
+  // **The seam this bug lived in.** Every other test builds its input the way
+  // the parser expects, so all of them agreed with each other and none of them
+  // agreed with `ps`. This one runs the real command with the real arguments
+  // and feeds the parser exactly what the subprocess wrote, newline and all.
+  it("parses what the ps subprocess actually writes", () => {
+    const out = execFileSync(
+      "ps",
+      ["-o", "pid=,ppid=,pgid=,state=,rss=,pcpu=,lstart=", "-p", String(me)],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+    expect(out.endsWith("\n"), "precondition: ps ends its output with a newline").toBe(true);
+
+    const rows = parsePsListing(out, me);
+    expect(rows, `parser rejected real ps output: ${JSON.stringify(out)}`).not.toBeNull();
+    const row = rows!.find((r) => r.pid === me);
+    expect(row).toBeDefined();
+    expect(row!.ppid).toBeGreaterThan(0);
+    expect(row!.pgid).toBeGreaterThan(0);
+    expect(row!.identity).toBeTruthy();
   });
 });
 
