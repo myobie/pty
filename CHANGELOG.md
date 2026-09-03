@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### One reader for the process table
+
+- Process facts now come from one module. On Linux it reads `/proc` and spawns
+  nothing at all. On macOS `ps` remains, but it is read once per operation
+  rather than once per process per poll — the difference between 240 spawns
+  inside a 1500 ms deadline and 60.
+- Every query separates three answers: the fact, "the table was read and this
+  process is not in it", and "I could not find out". A `ps` that is slow,
+  truncated or silent now produces the third rather than the second. There is
+  no default and no conversion that turns silence into absence by accident.
+- A listing that does not contain the process that read it is treated as
+  truncated rather than as an empty machine. `ps` always lists at least itself.
+- `recovery.processStartToken` is unchanged and still comes from
+  `ps -o lstart=`. Its exact text, including the two spaces before a
+  single-digit day, is a contract with the Rust tool through a shared registry.
+  The in-memory identity used by the teardown is a separate branded type so the
+  two cannot be compared by accident.
+- Production `ps` call sites: six down to three, and none of them inside a
+  per-process poll loop.
+
 ### `pty kill` finishes the job
 
 - After the daemon has gone, `pty kill` re-reads the process table. If anything

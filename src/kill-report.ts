@@ -53,14 +53,14 @@ export function verifiedEmpty(after: Aftermath, escalated?: number[]): boolean {
  */
 export function aftermathOf(
   before: ProcessIdentity[],
-  readStartToken: (pid: number) => string | null,
+  readIdentity: (pid: number) => string | null,
   exited: (pid: number) => boolean,
 ): Aftermath {
   const after: Aftermath = { survived: [], unknown: [] };
   for (const identity of before) {
     if (exited(identity.pid)) continue;
-    const token = readStartToken(identity.pid);
-    if (token === identity.processStartToken) after.survived.push(identity.pid);
+    const token = readIdentity(identity.pid);
+    if (token === identity.identity) after.survived.push(identity.pid);
     // A different token is a PID the kernel handed to somebody else.
     else if (token === null) after.unknown.push(identity.pid);
   }

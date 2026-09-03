@@ -13,44 +13,17 @@
 
 import { execFileSync } from "node:child_process";
 
-/** One row of `ps -axo pid=,ppid=,pgid=,stat=`. */
-export interface ProcessRow {
-  pid: number;
-  ppid: number;
-  pgid: number;
-  /** Process state. `ps` lists a zombie with its process group, so without
-   *  this the sweep counts a corpse as a member and reports a group it has
-   *  already emptied. Measured on Linux 2026-09-03: `<pid> <ppid> <pgid> Z`. */
-  state: string;
-}
+import {
+  isZombie,
+  openSource,
+  valueOf,
+  type ProcessSource,
+  type Row,
+} from "./proc-table.ts";
+import { walkTree } from "./process-tree.ts";
 
-export function isZombie(row: ProcessRow): boolean {
-  return row.state.startsWith("Z");
-}
-
-export function listProcessesWithGroups(): string {
-  try {
-    return execFileSync("ps", ["-axo", "pid=,ppid=,pgid=,stat="], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 2_000,
-    });
-  } catch {
-    return "";
-  }
-}
-
-export function parseRows(listing: string): ProcessRow[] {
-  const rows: ProcessRow[] = [];
-  for (const line of listing.split("\n")) {
-    const fields = line.trim().split(/\s+/);
-    if (fields.length < 3 || fields.length > 4) continue;
-    const [pid, ppid, pgid] = fields.map(Number);
-    if (!Number.isInteger(pid) || !Number.isInteger(ppid) || !Number.isInteger(pgid)) continue;
-    rows.push({ pid, ppid, pgid, state: fields[3] ?? "" });
-  }
-  return rows;
-}
+export type { Row as ProcessRow } from "./proc-table.ts";
+export { openSource } from "./proc-table.ts";
 
 /** Every distinct process group inside `rootPid`'s tree.
  *
@@ -60,24 +33,14 @@ export function parseRows(listing: string): ProcessRow[] {
  *
  *  Deliberately not filtered by start token: that is the whole point.
  */
-export function groupsInTree(rootPid: number, rows: ProcessRow[]): number[] {
-  const children = new Map<number, number[]>();
-  const pgidOf = new Map<number, number>();
-  for (const r of rows) {
-    children.set(r.ppid, [...(children.get(r.ppid) ?? []), r.pid]);
-    pgidOf.set(r.pid, r.pgid);
-  }
+export function groupsInTree(rootPid: number, source: ProcessSource): number[] {
+  const rows = valueOf(source.rows()) ?? ([] as Row[]);
+  const pgidOf = new Map<number, number>(rows.map((r) => [r.pid, r.pgid]));
   const rootGroup = pgidOf.get(rootPid);
   const groups: number[] = [];
-  const seen = new Set<number>([rootPid]);
-  const queue = [...(children.get(rootPid) ?? [])];
-  while (queue.length > 0) {
-    const pid = queue.shift()!;
-    if (seen.has(pid)) continue;
-    seen.add(pid);
+  for (const { pid } of walkTree(rootPid, source)) {
     const g = pgidOf.get(pid);
     if (g !== undefined && g !== rootGroup && g > 1 && !groups.includes(g)) groups.push(g);
-    for (const c of children.get(pid) ?? []) queue.push(c);
   }
   return groups.sort((a, b) => a - b);
 }
@@ -85,7 +48,8 @@ export function groupsInTree(rootPid: number, rows: ProcessRow[]): number[] {
 /** The live pids that still belong to any of `groups`. A zombie is excluded:
  *  `ps` still lists it with its group, and counting it would make the sweep
  *  report a group it has already emptied. */
-export function membersOfGroups(groups: number[], rows: ProcessRow[]): number[] {
+export function membersOfGroups(groups: number[], source: ProcessSource): number[] {
+  const rows = valueOf(source.rows()) ?? ([] as Row[]);
   return rows
     .filter((r) => !isZombie(r) && groups.includes(r.pgid))
     .map((r) => r.pid)
@@ -98,19 +62,11 @@ export function signalGroup(pgid: number, signal: NodeJS.Signals): void {
   try { process.kill(-pgid, signal); } catch {}
 }
 
-export function ownProcessGroup(): number {
-  // `pgid` of self. Node has no getpgrp binding, so ask ps about our own pid.
-  try {
-    const out = execFileSync("ps", ["-o", "pgid=", "-p", String(process.pid)], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 1_000,
-    }).trim();
-    const n = Number(out);
-    return Number.isInteger(n) ? n : -1;
-  } catch {
-    return -1;
-  }
+export function ownProcessGroup(source: ProcessSource = openSource()): number {
+  // Node has no `getpgrp` binding, so this comes out of the table like every
+  // other process fact. On Linux that is a `/proc` read and no subprocess.
+  const row = valueOf(source.row(process.pid));
+  return row ? row.pgid : -1;
 }
 
 export interface SweepDeps {

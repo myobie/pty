@@ -5,29 +5,28 @@ import { describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
 import {
   groupsInTree,
-  listProcessesWithGroups,
   membersOfGroups,
   ownProcessGroup,
-  parseRows,
   signalGroup,
   sweepGroups,
-  type ProcessRow,
 } from "../src/process-groups.ts";
+import { openSource, sourceFromShape } from "../src/proc-table.ts";
 import { snapshotDescendantProcesses } from "../src/process-tree.ts";
 
 // daemon 100 (its own group), pty child 200 (setsid: its own group and
 // session), 300 under the child, and 400 in a background group of its own.
 // 900 is unrelated. This is the shape measured on Linux for both tools on
 // 2026-09-03.
-const ROWS = ["100 1 100 Ss", "200 100 200 Ss", "300 200 200 S", "400 300 400 S", "900 1 900 S"].join("\n");
+const SHAPE = ["100 1 100 Ss", "200 100 200 Ss", "300 200 200 S", "400 300 400 S", "900 1 900 S"].join("\n");
+const shaped = () => sourceFromShape(SHAPE);
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
-const live = (groups: number[]) => membersOfGroups(groups, parseRows(listProcessesWithGroups()));
+const live = (groups: number[]) => membersOfGroups(groups, openSource());
 
 describe("choosing which process groups to sweep", () => {
   it("never targets the daemon's own group", () => {
-    const groups = groupsInTree(100, parseRows(ROWS));
+    const groups = groupsInTree(100, shaped());
     // The pty child calls setsid, so the daemon sits alone in its group and
     // signalling it would reach the daemon and nothing else.
     expect(groups).not.toContain(100);
@@ -35,35 +34,33 @@ describe("choosing which process groups to sweep", () => {
   });
 
   it("never targets an unrelated group", () => {
-    expect(groupsInTree(100, parseRows(ROWS))).not.toContain(900);
+    expect(groupsInTree(100, shaped())).not.toContain(900);
   });
 
   // The reason to sweep groups at all.
   it("still targets the group of a descendant whose start token cannot be read", () => {
-    const snapshot = snapshotDescendantProcesses(100, {
-      listProcesses: () => ROWS.split("\n").map((l) => l.split(/\s+/).slice(0, 2).join(" ")).join("\n"),
-      readStartToken: (pid) => (pid === 400 ? null : `tok:${pid}`),
-    });
+    // 400 is the one the table cannot name.
+    const unnamed = sourceFromShape(
+      ["100 1 100 Ss", "200 100 200 Ss", "300 200 200 S", "400 300 400 S -", "900 1 900 S"].join("\n"),
+    );
+    const snapshot = snapshotDescendantProcesses(100, { source: () => unnamed });
     expect(snapshot.some((i) => i.pid === 400)).toBe(false);
-    expect(groupsInTree(100, parseRows(ROWS))).toContain(400);
+    expect(groupsInTree(100, unnamed)).toContain(400);
   });
 
   it("reads members back by group", () => {
-    const rows = parseRows(ROWS);
-    expect(membersOfGroups([200], rows)).toEqual([200, 300]);
-    expect(membersOfGroups([], rows)).toEqual([]);
+    expect(membersOfGroups([200], shaped())).toEqual([200, 300]);
+    expect(membersOfGroups([], shaped())).toEqual([]);
   });
 
   // `ps` lists a zombie with its process group. Counting it would make the
   // sweep report a group it has already emptied, and then signal it again.
   it("does not count a zombie as a group member", () => {
-    const rows: ProcessRow[] = parseRows("100 1 100 Ss\n200 100 200 Sl\n300 200 200 Z");
-    expect(membersOfGroups([200], rows)).toEqual([200]);
+    const withCorpse = sourceFromShape("100 1 100 Ss\n200 100 200 Sl\n300 200 200 Z");
+    expect(membersOfGroups([200], withCorpse)).toEqual([200]);
   });
 
-  it("ignores a malformed listing row rather than guessing", () => {
-    expect(parseRows("1 2\nx y z\n7 8 9 S\n")).toEqual([{ pid: 7, ppid: 8, pgid: 9, state: "S" }]);
-  });
+
 });
 
 describe("the sweep", () => {
