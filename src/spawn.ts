@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   acquireLock, getEventsPath, getSocketPath, readMetadata, releaseLock,
   validateDisplayName,
-  isProcessAlive,
+  hasProcessExitedForReap,
 } from "./sessions.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -240,7 +240,12 @@ async function spawnViaNode(options: SpawnDaemonOptions, serverModule: string): 
       // Measured on a Mac by Silber.pty on 2026-09-03: the losing `pty run`
       // took 30.06 s against a 30 s budget and said "Timed out waiting for
       // daemon publication" instead of "is already running".
-      if (publishedElsewhere(metadata?.daemonPid ?? null, child.pid ?? -1, isProcessAlive, () =>
+      // **NOT `isProcessAlive`.** A zombie answers `kill(pid, 0)`, so the cheap
+      // predicate calls a corpse live — and a corpse recorded as the owner would
+      // make this session name refuse every future `pty run`, which is precisely
+      // the failure this check exists to avoid.
+      const ownerLive = (pid: number) => !hasProcessExitedForReap(pid);
+      if (publishedElsewhere(metadata?.daemonPid ?? null, child.pid ?? -1, ownerLive, () =>
         metadata !== null && hasPublishedSessionStart(options.name, metadata.createdAt),
       )) {
         // Deliberately the same sentence `pty run` prints when it sees a
@@ -270,6 +275,11 @@ async function spawnViaNode(options: SpawnDaemonOptions, serverModule: string): 
  *  metadata is still being written. **By a different pid**, or we would refuse
  *  our own success. **By a live one**, or stale metadata from a daemon that died
  *  would make the name permanently unusable.
+ *
+ *  "Live" means `hasProcessExitedForReap`, never `isProcessAlive`. **A zombie
+ *  answers `kill(pid, 0)`**, measured on Linux 2026-09-03, so the cheap
+ *  predicate calls a corpse live. An unreaped daemon is the precise case this
+ *  has to get right.
  *
  *  Kept separate from the registry so all four ways of answering "no" can be
  *  tested rather than raced for. */

@@ -798,7 +798,12 @@ type ReapObservedResult =
     signalled: boolean;
   };
 
-function hasProcessExitedForReap(pid: number): boolean {
+/** Is `pid` gone for reaping purposes? A zombie counts as exited.
+ *
+ *  Exported because the spawner needs the same question answered.
+ *  `isProcessAlive` is not a substitute: an unreaped process still answers
+ *  `kill(pid, 0)`, so the cheap predicate calls a corpse live. */
+export function hasProcessExitedForReap(pid: number): boolean {
   if (!isProcessAlive(pid)) return true;
   try {
     if (process.platform === "linux") {
