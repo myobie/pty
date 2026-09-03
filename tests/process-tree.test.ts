@@ -8,6 +8,7 @@ import {
 import {
   liveIdentity,
   sourceFromShape,
+  valueOf,
   type ProcessSource,
 } from "../src/proc-table.ts";
 
@@ -15,15 +16,31 @@ import {
  *  simulated without touching a real machine. */
 function mutableSource(live: Map<number, string>, shape: string): () => ProcessSource {
   const base = sourceFromShape(shape);
+  const rowOf = (pid: number) => {
+    const v = live.get(pid);
+    if (v === undefined) return null;
+    const row = valueOf(base.row(pid));
+    return row ? { ...row, identity: liveIdentity(v) } : null;
+  };
   return () => ({
     rows: () => base.rows(),
-    row: (pid) => base.row(pid),
-    isRunning: (pid) => base.isRunning(pid),
-    identity: (pid) => {
-      const v = live.get(pid);
-      return v === undefined
+    row: (pid) => {
+      const r = rowOf(pid);
+      return r === null
         ? { kind: "not-present" as const }
-        : { kind: "known" as const, value: liveIdentity(v) };
+        : { kind: "known" as const, value: r };
+    },
+    isRunning: (pid) => {
+      const r = rowOf(pid);
+      return r === null
+        ? { kind: "not-present" as const }
+        : { kind: "known" as const, value: true };
+    },
+    identity: (pid) => {
+      const r = rowOf(pid);
+      return r === null || r.identity === null
+        ? { kind: "not-present" as const }
+        : { kind: "known" as const, value: r.identity };
     },
   });
 }

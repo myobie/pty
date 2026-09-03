@@ -114,8 +114,15 @@ describe("the sweep against real processes", () => {
   // real processes: it builds a real group whose members ignore SIGTERM, runs
   // the real sweep, and checks the process table afterwards.
   it("kills a real group that ignores SIGTERM and verifies it is gone", async () => {
-    const child = spawn("setsid", ["sh", "-c", "trap '' TERM; sleep 60 & sleep 60"], {
+    // `detached: true` gives the child its own process group.
+    //
+    // **macOS has the `setsid` system call but no `setsid` executable.** An
+    // earlier version of this test spawned the binary, so on the one platform
+    // where process groups are the whole escalation story, the test could not
+    // run at all. Reported from a real Mac by Silber.pty on 2026-09-03.
+    const child = spawn("sh", ["-c", "trap '' TERM; sleep 60 & sleep 60"], {
       stdio: "ignore",
+      detached: true,
     });
     const leader = child.pid!;
     try {

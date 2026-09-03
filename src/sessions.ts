@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as net from "node:net";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { openSource } from "./proc-table.ts";
+import { isZombie, processOf } from "./proc-table.ts";
 import {
   assertPrivateRecoveryPaths,
   atomicWritePrivate,
@@ -814,11 +814,13 @@ type ReapObservedResult =
  *  has a readable start token, so the cheap predicates call a corpse a survivor. */
 export function hasProcessExitedForReap(pid: number): boolean {
   if (!isProcessAlive(pid)) return true;
-  // One `/proc` read on Linux, one `ps` call on macOS — and never one per
-  // process inside a poll loop, which is what this used to be.
-  const answer = openSource().isRunning(pid);
-  if (answer.kind === "known") return !answer.value;
-  if (answer.kind === "not-present") return true;
+  // One `/proc` read on Linux and no subprocess. On macOS this is still one
+  // `ps` per call, which is Node's floor without a native module — but it asks
+  // about ONE pid rather than reading the whole table, because this sits inside
+  // poll loops that run every 25 ms.
+  const row = processOf(pid);
+  if (row.kind === "known") return isZombie(row.value);
+  if (row.kind === "not-present") return true;
   // We did not find out. Ask the kernel once more rather than reading our own
   // silence as a death.
   return !isProcessAlive(pid);

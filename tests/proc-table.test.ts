@@ -3,9 +3,9 @@
 // answers this module exists to stop.
 
 import { describe, expect, it } from "vitest";
+import { hasProcessExitedForReap } from "../src/sessions.ts";
 import {
   isDefinitelyAbsent,
-  isZombie,
   openSource,
   orAbsentWhenUnknown,
   parseProcStat,
@@ -103,9 +103,11 @@ describe("against the real machine", () => {
     expect(isDefinitelyAbsent(openSource().isRunning(0x7fffffff))).toBe(true);
   });
 
-  // A zombie has a row and answers kill(pid, 0). The table must still say it
-  // is not running, and must not say it is absent.
-  it("reports a real zombie as present but not running", async () => {
+  // An unreaped child must never read as running. **The two platforms reach
+  // that answer differently, and this asserts the answer.** On Linux the corpse
+  // keeps a row with state Z. On macOS `ps` stops listing it the moment it
+  // exits. Measured on a real Mac by Silber.pty on 2026-09-03.
+  it("never reports an unreaped child as running", async () => {
     const sh = spawn("sh", ["-c", "sleep 0.1 & echo $! ; kill -STOP $$"], {
       stdio: ["ignore", "pipe", "ignore"],
     });
@@ -113,18 +115,25 @@ describe("against the real machine", () => {
       const pid = await new Promise<number>((resolve) =>
         sh.stdout!.once("data", (d) => resolve(Number(String(d).trim()))),
       );
-      let source = openSource();
-      for (let i = 0; i < 200; i++) {
-        source = openSource();
-        const row = valueOf(source.row(pid));
-        if (row && isZombie(row)) break;
+      let settled: string | null = null;
+      for (let i = 0; i < 500; i++) {
+        const source = openSource();
+        const answer = source.isRunning(pid);
+        // Linux: still listed, but a corpse.
+        if (answer.kind === "known" && answer.value === false) {
+          settled = "listed as not running";
+          break;
+        }
+        // macOS: gone from the listing entirely.
+        if (answer.kind === "not-present") {
+          settled = "no longer listed";
+          break;
+        }
         await sleep(10);
       }
-      const row = valueOf(source.row(pid));
-      expect(row, "the child never appeared as a zombie").not.toBeNull();
-      expect(isZombie(row!)).toBe(true);
-      expect(valueOf(source.isRunning(pid))).toBe(false);
-      expect(isDefinitelyAbsent(source.isRunning(pid))).toBe(false);
+      expect(settled, "an exited child still read as running").not.toBeNull();
+      // Whichever route, the conclusion callers depend on is the same.
+      expect(hasProcessExitedForReap(pid)).toBe(true);
     } finally {
       sh.kill("SIGKILL");
     }

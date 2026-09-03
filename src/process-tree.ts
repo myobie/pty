@@ -1,4 +1,5 @@
 import {
+  isZombie,
   openSource,
   valueOf,
   type LiveIdentity,
@@ -61,13 +62,22 @@ export function walkTree(
   return out;
 }
 
-/** Is this still the same process?
+/** Is this still the same process, and still running?
+ *
+ *  **A corpse is not a survivor.** On Linux an unreaped descendant keeps its
+ *  `/proc` row and its identity, so matching on identity alone counted it as
+ *  alive: the teardown would wait out its whole TERM budget for a process that
+ *  had already died, then report it as having survived a SIGKILL. That is the
+ *  kill over-claiming again, in the other direction. macOS never had this,
+ *  because `ps` stops listing a process the moment it exits.
  *
  *  **An unreadable source answers false, and that is deliberate**: it says
  *  "do not signal", never "it is gone". Every caller here wants the safe
  *  direction for a signal. */
 function isSameProcess(identity: ProcessIdentity, source: ProcessSource): boolean {
-  return valueOf(source.identity(identity.pid)) === identity.identity;
+  const row = valueOf(source.row(identity.pid));
+  if (row === null || isZombie(row)) return false;
+  return row.identity === identity.identity;
 }
 
 /** Signal only identities that still match their snapshot. A token mismatch
