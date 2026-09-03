@@ -4,7 +4,9 @@ import * as path from "node:path";
 import * as readline from "node:readline/promises";
 import { spawnSync, execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { attach, peek, send, queryStats, resolveSeqDelayMs, validateAttachStreamFdV1, type StatsResult } from "./client.ts";
+import { attach, peek, send, queryStats, resolveSeqDelayMs, validateAttachStreamFdV1, type StatsResult,
+  isSessionAlive,
+} from "./client.ts";
 import { printVersion } from "./version.ts";
 import { parseSeqValue } from "./keys.ts";
 import {
@@ -950,7 +952,17 @@ async function main(): Promise<void> {
           console.error(e.message);
           process.exit(1);
         }
-        if (existingNames.has(explicitId) && !attachExisting) {
+        // **"In use" has to mean in use by something alive.** A name that
+        // merely exists on disk is not taken: a record whose owner is a zombie
+        // has no socket to answer, and refusing it would make that session name
+        // unusable until something reaped the corpse — the exact failure the
+        // liveness check in `spawn.ts` exists to prevent, one command earlier.
+        //
+        // The Rust tool asks `session_exists(name) && client::is_alive(name)`
+        // here. This is the same question. Measured on a Mac by Silber.pty on
+        // 2026-09-03: with a zombie owner, Rust created a replacement in 186 ms
+        // and Node exited 1.
+        if (existingNames.has(explicitId) && !attachExisting && await isSessionAlive(explicitId)) {
           console.error(`Session id "${explicitId}" is already in use.`);
           process.exit(1);
         }

@@ -17,6 +17,29 @@ import { getSocketPath } from "./sessions.ts";
 import { stripAnsi } from "./tui/colors.ts";
 import { BRACKETED_PASTE_START, BRACKETED_PASTE_END } from "./paste.ts";
 
+/** Can anything answer on this session's socket?
+ *
+ *  The Rust tool's `client::is_alive`, which is `connect(name).is_ok()`. A name
+ *  that merely EXISTS on disk is not a name that is in use: a record whose
+ *  owner is a zombie has no socket to answer, and refusing it would make that
+ *  session name unusable until something reaped the corpse.
+ */
+export function isSessionAlive(name: string, timeoutMs = 250): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (alive: boolean) => {
+      if (settled) return;
+      settled = true;
+      try { socket.destroy(); } catch {}
+      resolve(alive);
+    };
+    const socket = net.createConnection(getSocketPath(name));
+    socket.setTimeout(timeoutMs, () => done(false));
+    socket.once("connect", () => done(true));
+    socket.once("error", () => done(false));
+  });
+}
+
 const DETACH_KEY = 0x1c; // Ctrl+\ (legacy encoding)
 const DETACH_KEY_KITTY = "\x1b[92;5u"; // Ctrl+\ (Kitty keyboard protocol)
 
