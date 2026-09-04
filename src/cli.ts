@@ -4,7 +4,9 @@ import * as path from "node:path";
 import * as readline from "node:readline/promises";
 import { spawnSync, execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { attach, peek, send, queryStats, resolveSeqDelayMs, validateAttachStreamFdV1, type StatsResult } from "./client.ts";
+import { attach, peek, send, queryStats, resolveSeqDelayMs, validateAttachStreamFdV1, type StatsResult,
+  isSessionAlive,
+} from "./client.ts";
 import { printVersion } from "./version.ts";
 import { parseSeqValue } from "./keys.ts";
 import {
@@ -42,9 +44,16 @@ import {
   getPidPath,
   getMetadataPath,
   DEFAULT_SESSION_DIR,
+  hasProcessExitedForReap,
   type SessionInfo,
   type SessionMetadata,
 } from "./sessions.ts";
+import { snapshotDescendantProcesses } from "./process-tree.ts";
+import { aftermathOf, allGone, killOutcomeLines, verifiedEmpty } from "./kill-report.ts";
+import {
+  groupsInTree, membersOfGroups, ownProcessGroup, signalGroup, sweepGroups,
+} from "./process-groups.ts";
+import { openSource, valueOf } from "./proc-table.ts";
 import { spawnDaemon, resolveCommand } from "./spawn.ts";
 import {
   acquireEventLock, appendEventSyncLocked, EventFollower, EventWriter, EventType, releaseEventLock,
@@ -294,6 +303,14 @@ Examples:
 
 Terminate a running session's daemon and exact descendant tree. Metadata is kept —
 restart or \`pty rm\` it later.
+
+The daemon tears the tree down on its way out, which races its own exit. So once
+the daemon has gone, \`pty kill\` re-reads the process table, signals any process
+group the session left behind, and reports what is still there. It exits non-zero
+unless it verified the tree is empty.
+
+A descendant that calls setsid leaves the session and the group, and neither the
+tree walk nor the group sweep can reach it.
 
 Examples:
   pty kill myserver`,
@@ -935,7 +952,17 @@ async function main(): Promise<void> {
           console.error(e.message);
           process.exit(1);
         }
-        if (existingNames.has(explicitId) && !attachExisting) {
+        // **"In use" has to mean in use by something alive.** A name that
+        // merely exists on disk is not taken: a record whose owner is a zombie
+        // has no socket to answer, and refusing it would make that session name
+        // unusable until something reaped the corpse — the exact failure the
+        // liveness check in `spawn.ts` exists to prevent, one command earlier.
+        //
+        // The Rust tool asks `session_exists(name) && client::is_alive(name)`
+        // here. This is the same question. Measured on a Mac by Silber.pty on
+        // 2026-09-03: with a zombie owner, Rust created a replacement in 186 ms
+        // and Node exited 1.
+        if (existingNames.has(explicitId) && !attachExisting && await isSessionAlive(explicitId)) {
           console.error(`Session id "${explicitId}" is already in use.`);
           process.exit(1);
         }
@@ -2615,6 +2642,23 @@ function formatUptime(seconds: number | null): string {
   return `${d}d ${h % 24}h`;
 }
 
+/** How long the escalation gives a group to answer SIGTERM before it stops
+ *  asking. A coding agent was measured ignoring SIGTERM for ten seconds, so
+ *  this grace is a courtesy, not a plan. */
+const ESCALATE_TERM_WAIT_MS = 2_000;
+/** How long to wait after SIGKILL before reporting what is still there. */
+const ESCALATE_KILL_WAIT_MS = 1_000;
+
+/** TERM the groups, wait, KILL what is left, wait, then re-read the process
+ *  table. Returns the pids still alive in those groups. */
+async function escalateOverGroups(groups: number[]): Promise<number[]> {
+  return sweepGroups(groups, ownProcessGroup(), ESCALATE_TERM_WAIT_MS, ESCALATE_KILL_WAIT_MS, {
+    live: (targets) => membersOfGroups(targets, openSource()),
+    signal: signalGroup,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  });
+}
+
 async function cmdKill(name: string): Promise<void> {
   const session = await getSession(name);
 
@@ -2636,6 +2680,16 @@ async function cmdKill(name: string): Promise<void> {
       updateTags(name, {}, ["strategy"]);
     } catch {}
   }
+
+  // Take the tree BEFORE the signal. After the daemon exits its children are
+  // reparented to init or a subreaper, so the parent links that identify them
+  // as this session's processes are gone. This snapshot is the only chance to
+  // learn which processes the word "killed" would be a claim about.
+  const before = snapshotDescendantProcesses(session.pid);
+  // Groups come from the raw listing, NOT from `before`. The snapshot drops a
+  // descendant whose start token cannot be read, and that process is then never
+  // signalled. A group needs no identity, so this reaches it anyway.
+  const groups = groupsInTree(session.pid, openSource());
 
   try {
     process.kill(session.pid, "SIGTERM");
@@ -2662,7 +2716,24 @@ async function cmdKill(name: string): Promise<void> {
     return;
   }
   cleanupSocket(name);
-  console.log(`Session "${name}" killed.`);
+  let after = aftermathOf(before, readProcessStartToken, hasProcessExitedForReap);
+  let escalated: number[] | undefined;
+  if (!allGone(after)) {
+    escalated = await escalateOverGroups(groups);
+    // Re-measure. The report must describe the machine now, not the signals
+    // that were sent at it.
+    const again = openSource();
+    after = aftermathOf(
+      before,
+      (pid) => valueOf(again.identity(pid)),
+      hasProcessExitedForReap,
+    );
+  }
+  const outcome = killOutcomeLines(name, after, escalated);
+  for (const line of outcome.out) console.log(line);
+  for (const line of outcome.err) console.error(line);
+  // Anything left is a failure, and the status says so.
+  if (!verifiedEmpty(after, escalated)) process.exitCode = 1;
 
   if (wasPermanent && session.metadata?.tags?.ptyfile) {
     console.error(`Note: this session is managed by ${session.metadata.tags.ptyfile}`);

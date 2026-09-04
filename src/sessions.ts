@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as net from "node:net";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { isZombie, processOf } from "./proc-table.ts";
 import {
   assertPrivateRecoveryPaths,
   atomicWritePrivate,
@@ -806,22 +807,39 @@ type ReapObservedResult =
     signalled: boolean;
   };
 
-function hasProcessExitedForReap(pid: number): boolean {
+/** Is `pid` gone for reaping purposes? A zombie counts as exited.
+ *
+ *  Exported because `pty kill` and the spawner both need the same question
+ *  answered. `isProcessAlive` is not a substitute: an unreaped process still
+ *  answers `kill(pid, 0)` and still has a readable start token, so the cheap
+ *  predicates call a corpse alive — a survivor to the one, a live owner to the
+ *  other. */
+export function hasProcessExitedForReap(pid: number): boolean {
   if (!isProcessAlive(pid)) return true;
-  try {
-    if (process.platform === "linux") {
-      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
-      const stateOffset = stat.lastIndexOf(") ") + 2;
-      return stateOffset >= 2 && stat[stateOffset] === "Z";
-    }
-    const state = execFileSync("ps", ["-o", "stat=", "-p", String(pid)], {
-      encoding: "utf8",
-      timeout: 1000,
-    }).trim();
-    return state === "" || state.startsWith("Z");
-  } catch {
-    return !isProcessAlive(pid);
-  }
+  // One `/proc` read on Linux and no subprocess. On macOS this is still one
+  // `ps` per call, which is Node's floor without a native module — but it asks
+  // about ONE pid rather than reading the whole table, because this sits inside
+  // poll loops that run every 25 ms.
+  const row = processOf(pid);
+  if (row.kind === "known") return isZombie(row.value);
+  if (row.kind === "not-present") return true;
+  // We did not find out. Ask the kernel once more rather than reading our own
+  // silence as a death.
+  return !isProcessAlive(pid);
+}
+
+/** Read a `ps -o stat=` field. `stillAlive` is asked only when the field is
+ *  empty, and it is a FRESH answer rather than the one taken before `ps` ran.
+ *
+ *  An empty field is two answers wearing one shape: the process is gone, or
+ *  `ps` did not manage to say. Reading it as "gone" is a failure folded into an
+ *  answer about what is there — so on an empty field we ask the kernel again
+ *  instead of reading silence as death. Under load on macOS `ps` is exactly
+ *  the thing that goes quiet. */
+export function reapedFromPsState(state: string, stillAlive: () => boolean): boolean {
+  if (state.startsWith("Z")) return true;
+  if (state === "") return !stillAlive();
+  return false;
 }
 
 /** Signal only after proving ownership, then reacquire after daemon shutdown

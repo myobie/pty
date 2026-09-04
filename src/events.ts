@@ -19,6 +19,7 @@ export const EventType = {
   SESSION_RESPAWN: "session_respawn",
   SESSION_ABANDONED: "session_abandoned",
   SESSION_FLAPPING: "session_flapping",
+  SESSION_DESCENDANTS_SURVIVED: "session_descendants_survived",
 } as const;
 
 export type EventType = (typeof EventType)[keyof typeof EventType];
@@ -83,6 +84,21 @@ export interface SessionExecEvent extends EventBase {
   type: "session_exec";
   previousCommand: string;
   command: string;
+}
+
+/** Emitted by a daemon that signalled its child's process tree with TERM and
+ *  then KILL and found processes still alive. The daemon also warns on its own
+ *  standard error, which has had no reader since the command that launched it
+ *  stopped listening — so this log line is the copy a person can find.
+ *
+ *  A record, not a guarantee: the daemon reports what it could not kill, and
+ *  cannot report a process that left its tree before the snapshot. */
+export interface SessionDescendantsSurvivedEvent extends EventBase {
+  type: "session_descendants_survived";
+  /** The surviving pids, deepest descendant first. Nested under `data` to
+   *  match the Rust tool byte for byte; both render through the unknown-type
+   *  fallback, so the printed line is identical. */
+  data: { pids: number[] };
 }
 
 /** Emitted by `pty gc` whenever it respawns a `strategy=permanent`
@@ -185,6 +201,7 @@ export type EventRecord =
   | SessionRespawnEvent
   | SessionAbandonedEvent
   | SessionFlappingEvent
+  | SessionDescendantsSurvivedEvent
   | UserEvent
   | DisplayNameChangeEvent
   | TagsChangeEvent

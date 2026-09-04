@@ -2,6 +2,73 @@
 
 ## Unreleased
 
+### One reader for the process table
+
+- Process facts now come from one module. On Linux it reads `/proc` and spawns
+  nothing at all. On macOS `ps` remains, but it is read once per operation
+  rather than once per process per poll — the difference between 240 spawns
+  inside a 1500 ms deadline and 60.
+- Every query separates three answers: the fact, "the table was read and this
+  process is not in it", and "I could not find out". A `ps` that is slow,
+  truncated or silent now produces the third rather than the second. There is
+  no default and no conversion that turns silence into absence by accident.
+- A listing that does not contain the process that read it is treated as
+  truncated rather than as an empty machine. `ps` always lists at least itself.
+- `recovery.processStartToken` is unchanged and still comes from
+  `ps -o lstart=`. Its exact text, including the two spaces before a
+  single-digit day, is a contract with the Rust tool through a shared registry.
+  The in-memory identity used by the teardown is a separate branded type so the
+  two cannot be compared by accident.
+- Production `ps` call sites: six down to three, and none of them inside a
+  per-process poll loop.
+
+### `pty kill` finishes the job
+
+- After the daemon has gone, `pty kill` re-reads the process table. If anything
+  from its pre-kill snapshot is still alive, it signals the process groups the
+  session left behind, waits, escalates to SIGKILL, reads the table again, and
+  reports what is still there. The daemon tears the tree down on its way out, so
+  its teardown races its own exit; the command outlives the daemon and can
+  finish the work.
+- The sweep targets process groups rather than PIDs, because a group signal
+  needs no per-process identity. A descendant whose process-start token cannot
+  be read is dropped from the snapshot and never signalled individually; its
+  group is still swept. The sweep also costs one `ps` call in total, against one
+  per descendant for tokens.
+- The daemon's own process group is never signalled. The PTY child calls
+  `setsid`, so the daemon is alone in its group. The group of the process
+  running `pty kill` is never signalled either, so the command survives to
+  report. Group id 1 and below are never signalled.
+- A zombie no longer counts as a process-group member. `ps` lists it with its
+  group, so counting it made the sweep report a group it had already emptied.
+
+### `pty kill` reports what it verified
+
+- `pty kill` prints `Session "X" killed.` only when the session's process tree
+  is gone. It takes a snapshot of the tree before it signals the daemon, and
+  re-checks that snapshot after the daemon exits. Before this, the command
+  asked about the daemon and reported about the session, so the success line
+  was a claim about processes it never looked at.
+- When something outlives the kill, the command prints
+  `Session "X" daemon stopped.` on standard output, which is the part it
+  verified, and names the surviving PIDs on standard error. A PID is called a
+  survivor only when its process-start token still matches. A PID that has not
+  exited but whose token cannot be read is reported separately as undecided.
+- A daemon that could not kill a descendant now appends
+  `session_descendants_survived` to the session event log, and its standard
+  error warning names the PIDs. The daemon's standard error has no reader, so
+  the log line is the copy a person can find.
+- `pty kill` sends no additional signals and waits no longer than before.
+- **Compatibility break.** `pty kill` now exits non-zero when anything survived,
+  and when a start token could not be read so the outcome is undecided. A script
+  that checks the status of `pty kill` will fail where it used to pass, because
+  it was passing on a false success. The fix for such a caller is to stop
+  treating an unverified kill as a completed one. A verified empty tree still
+  exits 0.
+- On macOS, an empty `ps -o stat=` field no longer counts as a dead process.
+  An empty field means the process is gone or `ps` did not answer, and under
+  load `ps` is the thing that goes quiet, so the kernel is asked again.
+
 ### Complete session termination
 
 - `pty kill` now stops the PTY child and its complete descendant tree. A
@@ -27,6 +94,12 @@
   validation. (closes #164)
 
 ### Storage format
+
+- New event type `session_descendants_survived`, carrying `data: { pids }`.
+  A daemon appends it when it signalled its child's process tree with TERM and
+  then KILL and found processes still alive. It records what the daemon could
+  not kill; a process that left the tree before the snapshot is not in it.
+
 
 - Supporting live daemons now advertise a `recovery` capability in session
   metadata. `pty recover <name> --snapshot <file>` uses that captured

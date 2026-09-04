@@ -216,6 +216,10 @@ export interface ProcessResources {
 /** Query CPU and memory usage for a process via ps. Returns null on failure. */
 function queryProcessResources(pid: number): ProcessResources | null {
   try {
+    // The only per-pid `ps` left in the daemon, and only off Linux. Resident
+    // set and CPU are not in `/proc/<pid>/stat` in the form this wants, and a
+    // stats query is one call for one session rather than one per descendant
+    // inside a loop.
     const output = execFileSync("ps", ["-o", "rss=,pcpu=", "-p", String(pid)], {
       encoding: "utf-8",
       timeout: 1000,
@@ -1432,10 +1436,16 @@ export class PtyServer {
         }
         const survivingDescendants = await descendantsDone;
         if (survivingDescendants.length > 0) {
+          const pids = survivingDescendants.map((d) => d.pid);
           console.error(
             `pty daemon "${this.name}": ${survivingDescendants.length} child process(es) ` +
-            "did not exit after exact TERM and KILL signals",
+            `did not exit after exact TERM and KILL signals: ${pids.join(", ")}`,
           );
+          // And somewhere a person can find it. The warning above goes to this
+          // daemon's standard error, which has had no reader since the command
+          // that launched it stopped listening — so the one moment it has
+          // something worth saying is the one moment nobody is there.
+          this.emitEvent(EventType.SESSION_DESCENDANTS_SURVIVED, { data: { pids } });
         }
         if (this.exited) await this.saveExitMetadataUntilSettled(this.exitCode);
         try { await this.eventWriter.flush(); } catch {}

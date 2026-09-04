@@ -144,6 +144,21 @@ export function readProcessStartToken(pid: number): string | null {
       return startTime ? `linux:${startTime}` : null;
     }
     if (process.platform === "darwin") {
+      // **THIS `ps` STAYS, AND IT IS NOT AN OVERSIGHT.**
+      //
+      // Everything else moved to `proc-table.ts`, which reads `/proc` on Linux
+      // and calls `ps` once per operation elsewhere. This one cannot, because
+      // the text it produces is written into session metadata as
+      // `recovery.processStartToken` and the Rust tool reads it back from the
+      // same registry. `ps -o lstart=` output — including the two spaces it
+      // puts before a single-digit day — is therefore a contract between two
+      // programs, not an implementation detail.
+      //
+      // It is safe where it is: one call per session lookup, never inside a
+      // poll loop, and a failure here already means "cannot confirm" rather
+      // than "gone". `LiveIdentity` in `proc-table.ts` is a separate branded
+      // type so the cheap identity used by the teardown can never be compared
+      // with this one.
       const started = execFileSync(
         "ps",
         ["-o", "lstart=", "-p", String(pid)],
