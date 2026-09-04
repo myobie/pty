@@ -1038,11 +1038,18 @@ export async function listSessions(options: ListSessionsOptions = {}): Promise<S
   return sessions.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
-/** Tag key that exempts a session from every form of dead-session reaping:
- *  the exit-time self-reap in the daemon AND `pty gc`'s sweep of exited
+/** Tag key that exempts a session from the exit-time self-reap in the daemon
+ *  AND — for a bounded retention window — from `pty gc`'s sweep of exited
  *  non-permanent sessions. Set it when you want a session's metadata,
  *  `lastLines`, and events file to survive its own death so you can inspect
- *  them afterwards. Mirrors the `keep` field in the agent spec. */
+ *  them afterwards. Mirrors the `keep` field in the agent spec.
+ *
+ *  The gc exemption is time-boxed (`DEFAULT_KEEP_MAX_AGE_MS`), not eternal:
+ *  agents set `keep=true` to protect a session they are debugging *now*, and
+ *  nobody comes back to untag it, so an unbounded exemption turns the
+ *  registry into an append-only log. Exit-time retention is unconditional —
+ *  expiry only ever happens on a gc pass, and only once the session has been
+ *  dead longer than the window. */
 export const KEEP_TAG = "keep";
 
 /** Values that read as "no" for the `keep` tag; everything else reads as
@@ -1067,6 +1074,38 @@ export function isKeepRequested(tags?: Record<string, string>): boolean {
   const raw = tags?.[KEEP_TAG];
   if (raw === undefined) return false;
   return !KEEP_FALSEY.has(raw.trim().toLowerCase());
+}
+
+/** How long `keep` holds a dead session against `pty gc`'s sweep, unless the
+ *  operator overrides it with `pty gc --keep-max-age <dur>`. Seven days is
+ *  long enough that "I killed it Friday, I'll look Monday" still works, and
+ *  short enough that a fleet of agents tagging every session cannot grow the
+ *  registry without bound. */
+export const DEFAULT_KEEP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Has a dead `keep`-tagged session outlived its retention window?
+ *
+ *  Age is anchored on `exitedAt` when the daemon wrote an exit record, else
+ *  `createdAt` (a `vanished` session never wrote one) — the same anchor
+ *  precedence `pty list --older-than` uses. Metadata carrying neither, or an
+ *  unparseable timestamp, has no age and therefore never expires: retaining
+ *  an unaged session is the recoverable failure, deleting it is not.
+ *
+ *  `maxAgeMs <= 0` expires everything, including unaged records — that is the
+ *  explicit "sweep the keep backlog now" request, not an inference from a
+ *  timestamp. Callers must apply this to dead sessions only; a RUNNING
+ *  session is never a sweep candidate regardless of its age. */
+export function isKeepExpired(
+  metadata: SessionMetadata | null | undefined,
+  nowMs: number,
+  maxAgeMs: number,
+): boolean {
+  if (maxAgeMs <= 0) return true;
+  const anchor = metadata?.exitedAt ?? metadata?.createdAt;
+  if (!anchor) return false;
+  const ts = Date.parse(anchor);
+  if (!Number.isFinite(ts)) return false;
+  return nowMs - ts >= maxAgeMs;
 }
 
 /** Should the daemon remove its own registry entry as it shuts down?
@@ -1403,9 +1442,16 @@ export interface GcResult {
    *  list as the preview. */
   removed: string[];
   /** Dead non-permanent sessions left in place because they carry the
-   *  `keep` tag. Reported rather than silently skipped so an operator can
-   *  see why `pty ls` still shows a dead session after a gc pass. */
+   *  `keep` tag and are still inside its retention window. Reported rather
+   *  than silently skipped so an operator can see why `pty ls` still shows
+   *  a dead session after a gc pass. */
   kept: string[];
+  /** Dead non-permanent sessions swept DESPITE a `keep` tag because they
+   *  outlived the retention window (`opts.keepMaxAgeMs`). Disjoint from
+   *  `removed`, which holds the untagged sweep, so a caller can report
+   *  "the keep tag expired" separately from ordinary stale-session
+   *  cleanup. Under `dryRun: true` this is the preview. */
+  keepExpired: string[];
   /** Children killed because their `parent=` referent is dead or missing. */
   killedOrphanChildren: { name: string; parent: string; reason: "missing" | "dead" }[];
   /** Live `strategy=permanent` sessions reaped because they've been
@@ -1523,7 +1569,10 @@ function commandFingerprint(command: string, args: string[]): string {
  *         skip it on subsequent ticks. Auto-reset when the stored command
  *         changes; manual reset via `pty tag <name> --rm strategy.status`.
  *    3.   Residual sweep: exited/vanished sessions that aren't permanent
- *         and aren't tagged `keep` get `cleanupAll`'d.
+ *         get `cleanupAll`'d. A `keep`-tagged session is exempt only until
+ *         it has been dead longer than `opts.keepMaxAgeMs` (default
+ *         `DEFAULT_KEEP_MAX_AGE_MS`), after which it is swept and reported
+ *         under `keepExpired` instead of `removed`.
  *
  *  Step 3 is now a BACKSTOP rather than the primary path: a non-permanent
  *  session that runs to completion reaps itself as it shuts down (see
@@ -1534,8 +1583,8 @@ function commandFingerprint(command: string, args: string[]): string {
  *      easy to miss: the exit path deliberately retains a session stopped
  *      from outside, but the child's `onExit` still wrote an exit record,
  *      so the session lands here as `status=exited` and gets swept. The
- *      retention is until the next sweep, not forever — `keep` is what
- *      makes it forever.
+ *      retention is until the next sweep, not forever — `keep` extends it
+ *      to the retention window.
  *    - `status=vanished` sessions — the daemon was SIGKILL'd / OOM-killed
  *      / lost to a reboot, so no exit-time code ran at all. This is the
  *      case exit-time cleanup structurally *cannot* cover, since the
@@ -1550,12 +1599,17 @@ export async function gc(
     idleDays?: number;
     fastFailWindowSec?: number;
     fastFailLimit?: number;
+    /** Retention window for `keep`-tagged dead sessions. Defaults to
+     *  `DEFAULT_KEEP_MAX_AGE_MS`; `0` sweeps every dead `keep` session on
+     *  this pass. Never applies to running sessions. */
+    keepMaxAgeMs?: number;
   } = {},
 ): Promise<GcResult> {
   const dryRun = !!opts.dryRun;
   const globalIdleDays = opts.idleDays;
   const globalFastFailWindow = opts.fastFailWindowSec;
   const globalFastFailLimit = opts.fastFailLimit;
+  const keepMaxAgeMs = opts.keepMaxAgeMs ?? DEFAULT_KEEP_MAX_AGE_MS;
   const rawCandidates = await inventoryRawCleanupCandidates();
   const rawRemoved: string[] = [];
   if (dryRun) {
@@ -1716,8 +1770,10 @@ export async function gc(
   // if it failed we leave the metadata around so the next tick can try
   // again.
   const finalList = dryRun ? initial : await listSessions();
+  const nowMs = Date.now();
   const removed: string[] = [...rawRemoved];
   const kept: string[] = [];
+  const keepExpired: string[] = [];
   for (const s of finalList) {
     if (!isGone(s.status)) continue;
     if (s.metadata?.tags?.strategy === "permanent") continue;
@@ -1725,20 +1781,26 @@ export async function gc(
     // exit-time cleanup already honours it; if gc did not, a `keep`
     // session would merely survive its own exit only to be swept moments
     // later by the next tick — which is not "keep" in any useful sense.
-    if (isKeepRequested(s.metadata?.tags)) {
+    // The exemption is bounded, though: once the session has been dead
+    // longer than the retention window it is swept like any other stale
+    // record, just reported under its own bucket so the reason is visible.
+    const keepRequested = isKeepRequested(s.metadata?.tags);
+    if (keepRequested && !isKeepExpired(s.metadata, nowMs, keepMaxAgeMs)) {
       kept.push(s.name);
       continue;
     }
+    const bucket = keepRequested ? keepExpired : removed;
     if (dryRun) {
-      removed.push(s.name);
+      bucket.push(s.name);
     } else if (await cleanupObservedSession(s)) {
-      removed.push(s.name);
+      bucket.push(s.name);
     }
   }
 
   return {
     removed,
     kept,
+    keepExpired,
     killedOrphanChildren,
     abandoned,
     reapSkipped,

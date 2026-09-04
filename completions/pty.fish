@@ -133,6 +133,7 @@ complete -c pty -n '__pty_using_command recover' -l snapshot -d 'Captured capabi
 complete -c pty -n '__pty_using_command rm remove' -a '(__pty_sessions)' -d 'Session'
 complete -c pty -n '__pty_using_command gc' -l dry-run -s n -d 'Preview without changing anything'
 complete -c pty -n '__pty_using_command gc' -l idle-days -d 'Reap permanents with no attach in N days'
+complete -c pty -n '__pty_using_command gc' -l keep-max-age -d 'Keep-tag retention for dead sessions (default 7d; 0 = now)'
 complete -c pty -n '__pty_using_command gc' -l fast-fail-window -d 'Fast-fail window (seconds; default 60)'
 complete -c pty -n '__pty_using_command gc' -l fast-fail-limit -d 'Consecutive fast fails before flapping (default 3)'
 complete -c pty -n '__pty_using_command gc' -l print-launchd-plist -d 'Emit a launchd plist that runs pty gc'

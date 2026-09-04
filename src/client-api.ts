@@ -10,8 +10,10 @@ export {
   cleanupSocket, cleanupAll,
   // Exposed for the same reason as `isReservedTagKey`: downstream tools
   // (relay, layout, supervisors) need to answer "is this session exempt
-  // from reaping?" without re-deriving which tag values count as set.
+  // from reaping?" without re-deriving which tag values count as set —
+  // including how long the `keep` exemption lasts against `pty gc`.
   KEEP_TAG, isKeepRequested, shouldReapAtExit,
+  DEFAULT_KEEP_MAX_AGE_MS, isKeepExpired,
   type SessionInfo, type SessionMetadata, type MetadataPatch, type MetadataPatchResult,
   type SessionExitEvidence, type SessionExitEvidenceTail,
   type SessionExitEvidenceResult, type RemoveSessionGenerationResult,
