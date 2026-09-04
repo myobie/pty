@@ -149,6 +149,7 @@ _pty() {
           _arguments \
             '(n --dry-run){n,--dry-run}[Preview without changing anything]' \
             '--idle-days[Reap permanents with no attach in N days]' \
+            '--keep-max-age[Keep-tag retention for dead sessions (default 7d; 0 = now)]' \
             '--fast-fail-window[Fast-fail window (seconds; default 60)]' \
             '--fast-fail-limit[Consecutive fast fails before flapping (default 3)]' \
             '--print-launchd-plist[Emit a launchd plist that runs pty gc]' \

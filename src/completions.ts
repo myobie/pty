@@ -203,6 +203,7 @@ const COMMANDS: readonly CommandSpec[] = [
     flags: [
       { name: "dry-run", short: "n", desc: "Preview without changing anything" },
       { name: "idle-days", desc: "Reap permanents with no attach in N days" },
+      { name: "keep-max-age", desc: "Keep-tag retention for dead sessions (default 7d; 0 = now)" },
       { name: "fast-fail-window", desc: "Fast-fail window (seconds; default 60)" },
       { name: "fast-fail-limit", desc: "Consecutive fast fails before flapping (default 3)" },
       { name: "print-launchd-plist", desc: "Emit a launchd plist that runs pty gc" },

@@ -69,6 +69,37 @@
   An empty field means the process is gone or `ps` did not answer, and under
   load `ps` is the thing that goes quiet, so the kernel is asked again.
 
+### Bounded `keep` retention in gc
+
+- **`keep=true` on a DEAD session now expires.** `pty gc`'s sweep skips a
+  `keep`-tagged exited/vanished session only while it has been dead for less
+  than `--keep-max-age` (default `7d`), then reclaims it. Exit-time retention
+  is unchanged and still unconditional; running sessions are never swept
+  whatever their age. Agents tag the session they are debugging right now and
+  never come back to untag it, so the previous forever-exemption grew the
+  registry without bound (740 of 911 sessions on one host).
+- **New `pty gc --keep-max-age <dur>`** — `Ns`/`Nm`/`Nh`/`Nd`, or bare `0` to
+  sweep every dead `keep` session on this pass. A unit-less non-zero value is
+  rejected rather than guessed at. Age is anchored on `exitedAt`, falling back
+  to `createdAt` for a `vanished` session that never wrote one — the same
+  anchor precedence `pty list --older-than` uses. Records with neither
+  timestamp never expire (except under `0`).
+- **`GcResult` gains `keepExpired: string[]`** — dead sessions swept despite a
+  `keep` tag, disjoint from `removed` so callers can report the two reasons
+  apart. Public `@compoundingtech/pty/client` API surface change; the module
+  also now exports `DEFAULT_KEEP_MAX_AGE_MS` and `isKeepExpired`.
+- **CLI output** — `Removed (keep expired after 7d): <name>` (`Would remove …`
+  under `--dry-run`), a `N keep-expired sessions` term in the summary bar, and
+  the retained-session line now names the window it is counting down:
+  `Kept (keep tag): <name> — swept once dead for 7d, or remove the keep tag to
+  reap it now`.
+- Tests in `tests/gc-keep-expiry.test.ts` (8 new) cover: young keep session
+  retained, expired one swept and reported apart from the untagged sweep,
+  custom windows in both flag spellings, `0` sweeping a just-exited session,
+  `createdAt` anchoring for a session with no exit record, a running keep
+  session surviving `--keep-max-age 0`, non-mutating dry runs, and flag
+  validation.
+
 ### Complete session termination
 
 - `pty kill` now stops the PTY child and its complete descendant tree. A

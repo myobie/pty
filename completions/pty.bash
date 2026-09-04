@@ -95,7 +95,7 @@ _pty() {
       fi
       ;;
     gc)
-      COMPREPLY=($(compgen -W "-n --dry-run --idle-days --fast-fail-window --fast-fail-limit --print-launchd-plist --interval" -- "${cur}"))
+      COMPREPLY=($(compgen -W "-n --dry-run --idle-days --keep-max-age --fast-fail-window --fast-fail-limit --print-launchd-plist --interval" -- "${cur}"))
       ;;
     tag)
       if [[ "${cur}" == -* ]]; then

@@ -59,7 +59,7 @@ pty run -e -- npm test                             # ephemeral: reap even on `pt
 pty run --tag owner=forge -- node srv.js           # tag a session with metadata
 pty run --env PORT=3000 --env MODE=dev -- node srv.js # persisted child env overlay
 pty run --unset-env NO_COLOR -- node srv.js           # persisted inherited-env removal
-pty run --tag keep=true -- npm test                # keep it even past a gc sweep, until you rm it
+pty run --tag keep=true -- npm test                # keep it past a gc sweep for 7d after it dies
 pty run --cwd /path -- node server.js              # run in a specific directory
 
 pty rename my-label                       # inside a session: add/change its displayName
@@ -195,7 +195,7 @@ Two per-session flags override the configured default either way:
 
 | Flag | Effect |
 |---|---|
-| tag `keep=true` | Force **preserve**, and survive even a `pty gc` sweep — metadata/`lastLines`/events last until you `pty rm` it. Wins over everything, including `--ephemeral`. |
+| tag `keep=true` | Force **preserve**, including past a `pty gc` sweep — metadata/`lastLines`/events last until `pty gc --keep-max-age` (default 7d) after the session died, or until you `pty rm` it. Wins over everything, including `--ephemeral`. |
 | `pty run -e` (`--ephemeral`) | Force **reap**, on *any* shutdown incl. `pty kill` and `strategy=permanent`. `keep` still wins over it. |
 
 `strategy=permanent` sessions are always preserved (their supervisor reconciles
@@ -220,15 +220,28 @@ the supporting daemon.
 ```sh
 pty run -d -- npm test                          # shipped default: reaped when it finishes
 PTY_REAP_ON_EXIT=false pty run -d -- npm test   # preserved: peekable until gc sweeps it
-pty run -d --tag keep=true -- npm test          # force-keep, even past a gc sweep, until you rm it
+pty run -d --tag keep=true -- npm test          # force-keep, past a gc sweep, for 7d after it dies
 pty run -d -e -- npm test                       # ephemeral: reaps on any shutdown, leaves no trace
 pty rm mybuild                                  # explicit removal beats keep
 ```
 
 `pty gc`'s sweep reclaims preserved-and-finished (and `vanished`) non-permanent
 sessions — see [Auto-running gc](#auto-running-gc). `pty list` is strictly
-observational and never removes registry state. `keep=true` and
-`strategy=permanent` are exempt from the gc sweep.
+observational and never removes registry state. `strategy=permanent` sessions
+are exempt from the sweep; `keep=true` is exempt for a bounded window.
+
+**`keep` expires.** A `keep`-tagged session is exempt from the sweep until it
+has been *dead* longer than `pty gc --keep-max-age <dur>` (default `7d`), then
+it is swept like any other stale record and reported as
+`Removed (keep expired after 7d): <name>`. Nobody ever comes back to untag a
+session they pinned mid-debug, so an unbounded exemption turns the registry
+into an append-only log. Running sessions are never swept, whatever their age.
+
+```sh
+pty gc --keep-max-age 30d      # a month of retention instead of a week
+pty gc --keep-max-age 0        # the keep exemption is over: sweep the backlog now
+pty gc -n --keep-max-age 0     # …preview that first; keep-expired sessions are counted separately
+```
 
 ### Events
 
@@ -387,7 +400,7 @@ Cycles (A→B, B→A) resolve deterministically by name-sorted iteration: whiche
 
 `pty gc` is a one-shot reconciliation pass. The intended deployment is to run it on a short interval so permanent sessions come back quickly and orphans get cleaned promptly. The CLI ships an install helper for macOS:
 
-Whether finished sessions need the sweep depends on [`PTY_REAP_ON_EXIT`](#session-lifecycle-and-cleanup): under the shipped `reap` default they self-clean at exit, so the sweep's finished-session duty is mostly `vanished` sessions (daemon killed outright, so it never ran its own cleanup) plus anything left listed by `preserve` mode. `pty list` only observes this state; it never cleans it up. So the interval primarily buys you respawn latency for permanents and orphan-kill promptness — and, in `preserve` mode, `pty ls` hygiene. `keep=true` and `strategy=permanent` sessions are exempt.
+Whether finished sessions need the sweep depends on [`PTY_REAP_ON_EXIT`](#session-lifecycle-and-cleanup): under the shipped `reap` default they self-clean at exit, so the sweep's finished-session duty is mostly `vanished` sessions (daemon killed outright, so it never ran its own cleanup) plus anything left listed by `preserve` mode. `pty list` only observes this state; it never cleans it up. So the interval primarily buys you respawn latency for permanents and orphan-kill promptness — and, in `preserve` mode, `pty ls` hygiene. `strategy=permanent` sessions are exempt; `keep=true` sessions are exempt until they have been dead longer than `--keep-max-age` (default 7d), which an interval-driven gc then reclaims on its own.
 
 ```sh
 pty gc --print-launchd-plist > ~/Library/LaunchAgents/com.compoundingtech.pty.gc.plist

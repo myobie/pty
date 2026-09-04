@@ -45,6 +45,7 @@ import {
   getMetadataPath,
   DEFAULT_SESSION_DIR,
   hasProcessExitedForReap,
+  DEFAULT_KEEP_MAX_AGE_MS,
   type SessionInfo,
   type SessionMetadata,
 } from "./sessions.ts";
@@ -334,7 +335,7 @@ Won't remove a running session — kill it first.
 Examples:
   pty rm myserver`,
 
-  gc: `Usage: pty gc [-n] [--idle-days N] [--fast-fail-window=N] [--fast-fail-limit=N]
+  gc: `Usage: pty gc [-n] [--idle-days N] [--keep-max-age <dur>] [--fast-fail-window=N] [--fast-fail-limit=N]
        pty gc --print-launchd-plist [--interval=N]
 
 One reconciliation pass: sweep exited/vanished, orphan-kill \`parent=<name>\` children,
@@ -342,11 +343,14 @@ reap abandoned permanents, respawn \`strategy=permanent\` sessions.
 
 Non-permanent sessions remove themselves as they exit, so the sweep is a backstop:
 it mainly catches \`vanished\` sessions, whose daemon was killed outright and so
-never ran its own cleanup. Sessions tagged \`keep\` are never swept.
+never ran its own cleanup. A session tagged \`keep\` is swept only once it has been
+dead longer than --keep-max-age; running sessions are never swept.
 
 Flags:
   -n, --dry-run           Preview without changing anything
   --idle-days N           Also reap permanents with no attach in N days
+  --keep-max-age <dur>    How long \`keep\` holds a DEAD session against the sweep
+                          (default 7d; 0 sweeps every dead keep session now)
   --fast-fail-window=N    Fast-fail window seconds (default 60; per-session tag wins)
   --fast-fail-limit=N     Consecutive fast fails before flapping (default 3; per-session tag wins)
   --print-launchd-plist   Print a macOS launchd plist that runs 'pty gc' on an interval
@@ -354,6 +358,7 @@ Flags:
 
 Examples:
   pty gc --dry-run
+  pty gc --keep-max-age 0
   pty gc --print-launchd-plist > ~/Library/LaunchAgents/com.compoundingtech.pty.gc.plist`,
 
   tag: `Usage: pty tag <ref>                           Show tags
@@ -583,6 +588,8 @@ Lifecycle:
                                           permanent-respawn, exited-sweep
   pty gc --dry-run                        Preview without changing anything (alias: -n)
   pty gc --idle-days N                    Also reap permanents with no attach in N days
+  pty gc --keep-max-age <dur>             How long a \`keep\` tag holds a DEAD session against
+                                          the sweep (default 7d; 0 sweeps the backlog now)
   pty gc --fast-fail-window=N             Fast-fail window (seconds) for the respawn cap
                                           (default 60; per-session strategy.fast-fail-window wins)
   pty gc --fast-fail-limit=N              Consecutive fast fails before a permanent is flagged
@@ -1443,6 +1450,7 @@ async function main(): Promise<void> {
       let idleDays: number | undefined;
       let fastFailWindowSec: number | undefined;
       let fastFailLimit: number | undefined;
+      let keepMaxAgeMs: number | undefined;
       const parsePositive = (flag: string, raw: string): number => {
         const v = parseInt(raw, 10);
         if (!Number.isFinite(v) || v <= 0) {
@@ -1450,6 +1458,19 @@ async function main(): Promise<void> {
           process.exit(1);
         }
         return v;
+      };
+      // Durations, unlike the integer flags, have a meaningful zero: `0`
+      // means "the keep exemption is over, sweep the backlog now". The
+      // unit-less spelling is accepted only for zero, since `--keep-max-age 7`
+      // would otherwise be ambiguous between seconds and days.
+      const parseAge = (flag: string, raw: string): number => {
+        if (raw.trim() === "0") return 0;
+        const ms = parseDuration(raw);
+        if (ms == null) {
+          console.error(`pty gc: ${flag} expects a duration like 12h, 7d, or 0 (got "${raw}")`);
+          process.exit(1);
+        }
+        return ms;
       };
       for (let i = 0; i < gcArgs.length; i++) {
         const a = gcArgs[i];
@@ -1469,13 +1490,17 @@ async function main(): Promise<void> {
           fastFailLimit = parsePositive("--fast-fail-limit", gcArgs[++i]);
         } else if (a.startsWith("--fast-fail-limit=")) {
           fastFailLimit = parsePositive("--fast-fail-limit", a.slice("--fast-fail-limit=".length));
+        } else if (a === "--keep-max-age" && i + 1 < gcArgs.length) {
+          keepMaxAgeMs = parseAge("--keep-max-age", gcArgs[++i]);
+        } else if (a.startsWith("--keep-max-age=")) {
+          keepMaxAgeMs = parseAge("--keep-max-age", a.slice("--keep-max-age=".length));
         }
       }
       if (printPlist) {
         printLaunchdPlist(interval);
         break;
       }
-      await cmdGc(dryRun, idleDays, fastFailWindowSec, fastFailLimit);
+      await cmdGc({ dryRun, idleDays, fastFailWindowSec, fastFailLimit, keepMaxAgeMs });
       break;
     }
 
@@ -3157,13 +3182,16 @@ async function cmdRm(name: string): Promise<void> {
   console.log(`Session "${name}" removed.`);
 }
 
-async function cmdGc(
-  dryRun: boolean,
-  idleDays?: number,
-  fastFailWindowSec?: number,
-  fastFailLimit?: number,
-): Promise<void> {
-  const result = await gc({ dryRun, idleDays, fastFailWindowSec, fastFailLimit });
+async function cmdGc(opts: {
+  dryRun: boolean;
+  idleDays?: number;
+  fastFailWindowSec?: number;
+  fastFailLimit?: number;
+  keepMaxAgeMs?: number;
+}): Promise<void> {
+  const { dryRun } = opts;
+  const result = await gc(opts);
+  const keepMaxAgeMs = opts.keepMaxAgeMs ?? DEFAULT_KEEP_MAX_AGE_MS;
   const prunedTags = await pruneOrphanLayoutTags({ dryRun });
 
   const killedVerb = dryRun ? "Would kill orphan child" : "Killed orphan child";
@@ -3208,11 +3236,21 @@ async function cmdGc(
   for (const name of result.removed) {
     console.log(`${removeVerb}: ${name}`);
   }
+  // Reported apart from the plain sweep above: an operator who tagged these
+  // sessions asked for them to survive, so the reason they went away anyway
+  // has to be visible rather than looking like the keep tag was ignored.
+  for (const name of result.keepExpired) {
+    console.log(
+      `${removeVerb} (keep expired after ${formatDuration(keepMaxAgeMs)}): ${name}`,
+    );
+  }
   // Deliberately NOT counted as an action below: a kept session is a
   // no-op. It is printed anyway so "why is this dead session still
   // listed?" has a visible answer instead of looking like a gc bug.
   for (const name of result.kept) {
-    console.log(`Kept (keep tag): ${name} — remove the keep tag to reap it`);
+    console.log(
+      `Kept (keep tag): ${name} — swept once dead for ${formatDuration(keepMaxAgeMs)}, or remove the keep tag to reap it now`,
+    );
   }
   for (const { name, removedKeys } of prunedTags) {
     console.log(
@@ -3230,6 +3268,7 @@ async function cmdGc(
     result.flapped.length +
     result.flappingSkipped.length +
     result.removed.length +
+    result.keepExpired.length +
     totalTags;
 
   if (totalActions === 0) {
@@ -3261,6 +3300,9 @@ async function cmdGc(
   }
   if (result.removed.length > 0) {
     parts.push(`${result.removed.length} stale session${result.removed.length === 1 ? "" : "s"}`);
+  }
+  if (result.keepExpired.length > 0) {
+    parts.push(`${result.keepExpired.length} keep-expired session${result.keepExpired.length === 1 ? "" : "s"}`);
   }
   if (totalTags > 0) {
     parts.push(`${totalTags} orphan tag${totalTags === 1 ? "" : "s"}`);
