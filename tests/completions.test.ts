@@ -13,7 +13,7 @@ import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { execSync } from "node:child_process";
 import { COMMANDS } from "../src/completions.ts";
@@ -183,6 +183,26 @@ printf '%s\n' "\${COMPREPLY[@]}"`;
       const out = gen(shell);
       expect(out.length).toBeGreaterThan(50);
       expect(out, `output for ${shell} should end with a newline`).toMatch(/\n$/);
+    }
+  });
+
+  it("lets piped stdout drain before exiting", () => {
+    const delayedStdout = pathToFileURL(
+      path.join(__dirname, "fixtures", "delayed-stdout.mjs"),
+    ).href;
+    for (const shell of ["fish", "bash", "zsh"]) {
+      const r = spawnSync(
+        nodeBin,
+        ["--import", delayedStdout, cliPath, "completions", shell],
+        { encoding: "utf8" },
+      );
+      const checkedIn = fs.readFileSync(
+        path.join(__dirname, "..", "completions", `pty.${shell}`),
+        "utf8",
+      );
+
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout, `${shell} output was truncated`).toBe(checkedIn);
     }
   });
 
